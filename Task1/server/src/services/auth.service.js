@@ -62,3 +62,37 @@ export async function getUserById(id) {
   }
   return user
 }
+
+const DEFAULT_PAGE = 1
+const DEFAULT_LIMIT = 20
+const MAX_LIMIT = 100
+
+export async function getAllUsersAdmin({ page, limit } = {}) {
+  const parsedPage = Number.parseInt(page, 10)
+  const parsedLimit = Number.parseInt(limit, 10)
+
+  const currentPage = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : DEFAULT_PAGE
+  const pageSize =
+    Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, MAX_LIMIT) : DEFAULT_LIMIT
+
+  const [total, users] = await Promise.all([
+    prisma.user.count(),
+    prisma.user.findMany({
+      select: SAFE_USER_SELECT,
+      orderBy: { createdAt: 'desc' },
+      skip: (currentPage - 1) * pageSize,
+      take: pageSize,
+    }),
+  ])
+
+  return {
+    users,
+    meta: {
+      total,
+      count: users.length,
+      page: currentPage,
+      limit: pageSize,
+      totalPages: Math.max(Math.ceil(total / pageSize), 1),
+    },
+  }
+}
