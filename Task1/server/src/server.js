@@ -1,8 +1,6 @@
-import 'dotenv/config'
+import { env } from './config/env.js'
 import app from './app.js'
 
-const PORT = process.env.PORT || 5000
-
-app.listen(PORT, () => {
-  console.log(`ShopSphere API listening on http://localhost:${PORT}`)
+app.listen(env.port, () => {
+  console.log(`ShopSphere API listening on http://localhost:${env.port}`)
 })
