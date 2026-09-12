@@ -2,11 +2,10 @@ import { useEffect, useState } from 'react'
 import { listAllOrdersAdmin, updateOrderStatusAdmin } from '../../api/orders.js'
 import { getErrorMessage } from '../../api/client.js'
 import { useToast } from '../../hooks/useToast.js'
+import { ORDER_STATUSES } from '../../utils/orderStatus.js'
 import Spinner from '../../components/ui/Spinner.jsx'
 import ErrorState from '../../components/ui/ErrorState.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
-
-const STATUS_OPTIONS = ['pending', 'paid', 'shipped', 'delivered', 'cancelled']
 
 export default function AdminOrders() {
   const [orders, setOrders] = useState([])
@@ -104,7 +103,7 @@ export default function AdminOrders() {
                     aria-label={`Update status for order ${order.id}`}
                     className="rounded-lg border border-slate-300 px-2 py-1 text-sm capitalize disabled:opacity-50"
                   >
-                    {STATUS_OPTIONS.map((option) => (
+                    {ORDER_STATUSES.map((option) => (
                       <option key={option} value={option}>
                         {option}
                       </option>

@@ -48,7 +48,12 @@ export default function Checkout() {
               <dd className="font-semibold text-slate-900">${Number(order.total).toFixed(2)}</dd>
             </div>
           </dl>
-          <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
+          <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row sm:flex-wrap">
+            <Link to={`/orders/${order.id}`}>
+              <Button variant="secondary" className="w-full">
+                View Order
+              </Button>
+            </Link>
             <Link to="/orders">
               <Button variant="secondary" className="w-full">
                 View Order History

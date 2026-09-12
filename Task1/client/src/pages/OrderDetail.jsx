@@ -6,6 +6,7 @@ import Spinner from '../components/ui/Spinner.jsx'
 import ErrorState from '../components/ui/ErrorState.jsx'
 import Card from '../components/ui/Card.jsx'
 import Button from '../components/ui/Button.jsx'
+import OrderStatusBadge from '../components/order/OrderStatusBadge.jsx'
 import { handleImageError } from '../utils/image.js'
 
 export default function OrderDetail() {
@@ -80,13 +81,11 @@ function OrderDetailView({ id }) {
         &larr; Back to Order History
       </Link>
 
-      <div className="mt-4 flex items-center justify-between">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-bold text-slate-900">Order Details</h1>
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium capitalize text-slate-700">
-          {order.status}
-        </span>
+        <OrderStatusBadge status={order.status} />
       </div>
-      <p className="mt-1 font-mono text-sm text-slate-500">{order.id}</p>
+      <p className="mt-1 break-all font-mono text-sm text-slate-500">{order.id}</p>
       <p className="text-sm text-slate-500">Placed on {new Date(order.createdAt).toLocaleString()}</p>
 
       <div className="mt-6 grid gap-6 md:grid-cols-2">
@@ -131,15 +130,21 @@ function OrderDetailView({ id }) {
               alt={item.name}
               className="h-16 w-16 flex-shrink-0 rounded-lg object-cover"
             />
-            <div className="flex-1">
-              <p className="font-medium text-slate-900">{item.name}</p>
+            <div className="min-w-0 flex-1">
+              <p className="break-words font-medium text-slate-900">{item.name}</p>
               <p className="text-sm text-slate-500">
                 ${Number(item.unitPrice).toFixed(2)} &times; {item.quantity}
               </p>
             </div>
-            <p className="font-semibold text-slate-900">${Number(item.subtotal).toFixed(2)}</p>
+            <p className="flex-shrink-0 font-semibold text-slate-900">${Number(item.subtotal).toFixed(2)}</p>
           </div>
         ))}
+      </div>
+
+      <div className="mt-8 flex justify-center">
+        <Link to="/products">
+          <Button variant="secondary">Continue Shopping</Button>
+        </Link>
       </div>
     </div>
   )
