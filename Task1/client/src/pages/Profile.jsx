@@ -1,5 +1,7 @@
+import { Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth.js'
 import Card from '../components/ui/Card.jsx'
+import Button from '../components/ui/Button.jsx'
 
 export default function Profile() {
   const { user } = useAuth()
@@ -22,7 +24,16 @@ export default function Profile() {
             <dd className="capitalize text-slate-900">{user?.role}</dd>
           </div>
         </dl>
-        <p className="mt-6 text-sm text-slate-500">Profile editing and order history are coming in a later phase.</p>
+        <div className="mt-6 flex items-center justify-between border-t border-slate-200 pt-6">
+          <div>
+            <p className="text-sm font-medium text-slate-900">Order History</p>
+            <p className="text-sm text-slate-500">View your past orders and their status.</p>
+          </div>
+          <Link to="/orders">
+            <Button variant="secondary">View Orders</Button>
+          </Link>
+        </div>
+        <p className="mt-6 text-sm text-slate-500">Profile editing is coming in a later phase.</p>
       </Card>
     </div>
   )

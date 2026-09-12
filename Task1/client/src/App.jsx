@@ -10,6 +10,7 @@ import Register from './pages/Register.jsx'
 import Cart from './pages/Cart.jsx'
 import Checkout from './pages/Checkout.jsx'
 import OrderHistory from './pages/OrderHistory.jsx'
+import OrderDetail from './pages/OrderDetail.jsx'
 import Profile from './pages/Profile.jsx'
 import AdminDashboard from './pages/admin/AdminDashboard.jsx'
 import AdminProducts from './pages/admin/AdminProducts.jsx'
@@ -31,6 +32,7 @@ function App() {
           <Route path="/cart" element={<Cart />} />
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/orders" element={<OrderHistory />} />
+          <Route path="/orders/:id" element={<OrderDetail />} />
           <Route path="/profile" element={<Profile />} />
         </Route>
 

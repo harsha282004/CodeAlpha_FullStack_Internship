@@ -60,3 +60,14 @@ export function isValidPrice(price) {
 export function isValidStock(stock) {
   return typeof stock === 'number' && Number.isInteger(stock) && stock >= 0
 }
+
+// Permissive on purpose - international postal code formats vary widely.
+const POSTAL_CODE_REGEX = /^[A-Za-z0-9][A-Za-z0-9\s-]{1,10}[A-Za-z0-9]$/
+
+export function isValidPostalCode(value) {
+  return typeof value === 'string' && POSTAL_CODE_REGEX.test(value.trim())
+}
+
+export function isPositiveInteger(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+}
