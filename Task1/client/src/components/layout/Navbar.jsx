@@ -1,13 +1,24 @@
 import { useState } from 'react'
 import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth.js'
+import { useCart } from '../../hooks/useCart.js'
 import Button from '../ui/Button.jsx'
 
 const navLinkClass = ({ isActive }) =>
   `text-sm font-medium transition-colors ${isActive ? 'text-slate-900' : 'text-slate-500 hover:text-slate-900'}`
 
+function CartBadge({ count }) {
+  if (count <= 0) return null
+  return (
+    <span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-900 px-1 text-xs font-semibold text-white">
+      {count}
+    </span>
+  )
+}
+
 export default function Navbar() {
   const { user, isAuthenticated, logout } = useAuth()
+  const { totalItems } = useCart()
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const navigate = useNavigate()
 
@@ -36,7 +47,10 @@ export default function Navbar() {
             Products
           </NavLink>
           <NavLink to="/cart" className={navLinkClass}>
-            Cart
+            <span className="inline-flex items-center">
+              Cart
+              <CartBadge count={totalItems} />
+            </span>
           </NavLink>
 
           {isAuthenticated ? (
@@ -86,7 +100,10 @@ export default function Navbar() {
               Products
             </NavLink>
             <NavLink to="/cart" className={navLinkClass} onClick={closeMenu}>
-              Cart
+              <span className="inline-flex items-center">
+                Cart
+                <CartBadge count={totalItems} />
+              </span>
             </NavLink>
 
             {isAuthenticated ? (
