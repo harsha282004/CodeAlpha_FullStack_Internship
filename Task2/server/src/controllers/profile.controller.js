@@ -2,7 +2,17 @@ import {
   getPublicProfile as getPublicProfileService,
   getMyProfile as getMyProfileService,
   updateMyProfile as updateMyProfileService,
+  searchUsers as searchUsersService,
 } from '../services/profile.service.js'
+
+export async function searchUsers(req, res, next) {
+  try {
+    const { users, pagination } = await searchUsersService(req.query.q, req.query)
+    res.json({ success: true, data: { users, pagination } })
+  } catch (error) {
+    next(error)
+  }
+}
 
 export async function getPublicProfile(req, res, next) {
   try {

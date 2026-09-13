@@ -7,6 +7,9 @@ import {
   normalizeBio,
   isValidAvatarUrl,
   normalizeAvatarUrl,
+  normalizeSearchQuery,
+  isValidSearchQuery,
+  parsePagination,
 } from '../utils/validation.js'
 
 // Never add email or passwordHash to this — used for profiles anyone can view.
@@ -64,6 +67,49 @@ export async function getPublicProfile(username) {
   }
 
   return user
+}
+
+export async function searchUsers(rawQuery, paginationQuery) {
+  const query = normalizeSearchQuery(rawQuery)
+  if (!isValidSearchQuery(query)) {
+    throw profileError('Search query must be between 1 and 100 characters', 400)
+  }
+
+  const pagination = parsePagination(paginationQuery)
+  if (!pagination) {
+    throw profileError('Invalid pagination parameters', 400)
+  }
+  const { page, limit } = pagination
+
+  // Deterministic tiebreaker-free order — username is unique, so pagination
+  // never straddles a tie the way ordering by name/createdAt could.
+  const where = {
+    OR: [
+      { username: { contains: query, mode: 'insensitive' } },
+      { name: { contains: query, mode: 'insensitive' } },
+    ],
+  }
+
+  const [users, total] = await Promise.all([
+    prisma.user.findMany({
+      where,
+      select: PUBLIC_USER_SELECT,
+      orderBy: { username: 'asc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.user.count({ where }),
+  ])
+
+  return {
+    users,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(Math.ceil(total / limit), 1),
+    },
+  }
 }
 
 export async function getMyProfile(userId) {

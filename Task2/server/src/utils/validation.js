@@ -122,6 +122,16 @@ export function isValidUuid(value) {
   return typeof value === 'string' && UUID_REGEX.test(value)
 }
 
+const MAX_SEARCH_QUERY_LENGTH = 100
+
+export function normalizeSearchQuery(query) {
+  return typeof query === 'string' ? query.trim() : ''
+}
+
+export function isValidSearchQuery(query) {
+  return typeof query === 'string' && query.length > 0 && query.length <= MAX_SEARCH_QUERY_LENGTH
+}
+
 const DEFAULT_PAGE = 1
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 50

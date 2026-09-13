@@ -1,13 +1,15 @@
 import { Router } from 'express'
-import { getPublicProfile, getMyProfile, updateMyProfile } from '../controllers/profile.controller.js'
+import { getPublicProfile, getMyProfile, updateMyProfile, searchUsers } from '../controllers/profile.controller.js'
 import { authenticate } from '../middleware/auth.js'
 import followRoutes from './follow.routes.js'
 
 const router = Router()
 
-// /me must be registered before /:username so "me" is never matched as a username.
+// Static routes ('/me', '/search') must be registered before the dynamic
+// '/:username' route below so neither is ever matched as a username.
 router.get('/me', authenticate, getMyProfile)
 router.patch('/me', authenticate, updateMyProfile)
+router.get('/search', searchUsers)
 
 // Mounted before the generic '/:username' route below so the nested
 // /follow, /followers, /following sub-paths are handled here first. A bare
