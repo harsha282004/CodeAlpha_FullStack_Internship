@@ -88,14 +88,32 @@ export function normalizePostImageUrl(imageUrl) {
   return normalizeNullableUrl(imageUrl)
 }
 
+// Shared by post content and comment content — just non-empty trimmed text
+// under a caller-supplied length cap.
+function isValidTrimmedText(value, maxLength) {
+  return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= maxLength
+}
+
+function normalizeTrimmedText(value) {
+  return typeof value === 'string' ? value.trim() : value
+}
+
 export function isValidPostContent(content) {
-  return (
-    typeof content === 'string' && content.trim().length > 0 && content.trim().length <= MAX_POST_CONTENT_LENGTH
-  )
+  return isValidTrimmedText(content, MAX_POST_CONTENT_LENGTH)
 }
 
 export function normalizePostContent(content) {
-  return typeof content === 'string' ? content.trim() : content
+  return normalizeTrimmedText(content)
+}
+
+const MAX_COMMENT_CONTENT_LENGTH = 2000
+
+export function isValidCommentContent(content) {
+  return isValidTrimmedText(content, MAX_COMMENT_CONTENT_LENGTH)
+}
+
+export function normalizeCommentContent(content) {
+  return normalizeTrimmedText(content)
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
