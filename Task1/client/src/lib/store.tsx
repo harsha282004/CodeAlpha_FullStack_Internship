@@ -172,6 +172,12 @@ export function useStore() {
   return value;
 }
 
-export function money(value: number) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+// Display-only conversion: the backend stores and calculates everything in USD;
+// this fixed rate only controls how prices are formatted on screen.
+const USD_TO_INR_RATE = 83;
+
+export function money(usdValue: number) {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(
+    usdValue * USD_TO_INR_RATE,
+  );
 }
