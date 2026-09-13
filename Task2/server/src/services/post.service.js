@@ -6,6 +6,8 @@ import {
   isValidPostImageUrl,
   normalizePostImageUrl,
   parsePagination,
+  normalizeUsername,
+  isValidUsername,
 } from '../utils/validation.js'
 
 // Never add email or passwordHash to this — post authors are visible to
@@ -26,6 +28,17 @@ const POST_SELECT = {
   author: {
     select: SAFE_AUTHOR_SELECT,
   },
+  // Counts only — no viewer identity needed, so safe on this public endpoint.
+  // "Liked by me" isn't available here since /api/posts has no auth; that's
+  // computed separately (with auth) by feed.service.js for /api/feed.
+  _count: {
+    select: { likes: true, comments: true },
+  },
+}
+
+function shapePost(post) {
+  const { _count, ...rest } = post
+  return { ...rest, likeCount: _count.likes, commentCount: _count.comments }
 }
 
 const ALLOWED_CREATE_FIELDS = ['content', 'imageUrl']
@@ -58,7 +71,7 @@ export async function createPost(userId, input) {
     throw postError('Image URL must be a valid http:// or https:// URL', 400)
   }
 
-  return prisma.post.create({
+  const post = await prisma.post.create({
     data: {
       content: normalizePostContent(rawInput.content),
       imageUrl: rawInput.imageUrl !== undefined ? normalizePostImageUrl(rawInput.imageUrl) : undefined,
@@ -67,6 +80,7 @@ export async function createPost(userId, input) {
     },
     select: POST_SELECT,
   })
+  return shapePost(post)
 }
 
 export async function getPostById(postId) {
@@ -83,7 +97,7 @@ export async function getPostById(postId) {
     throw postError('Post not found', 404)
   }
 
-  return post
+  return shapePost(post)
 }
 
 export async function listPosts(query) {
@@ -92,20 +106,33 @@ export async function listPosts(query) {
     throw postError('Invalid pagination parameters', 400)
   }
 
+  // Optional author filter (e.g. a profile page's post list). Absent by
+  // default, which preserves the original "all posts" behavior exactly.
+  let where
+  const rawUsername = query?.username
+  if (rawUsername !== undefined) {
+    const normalizedUsername = normalizeUsername(rawUsername)
+    if (!isValidUsername(normalizedUsername)) {
+      throw postError('Invalid username', 400)
+    }
+    where = { author: { username: normalizedUsername } }
+  }
+
   const { page, limit } = pagination
 
   const [posts, total] = await Promise.all([
     prisma.post.findMany({
+      where,
       select: POST_SELECT,
       orderBy: { createdAt: 'desc' },
       skip: (page - 1) * limit,
       take: limit,
     }),
-    prisma.post.count(),
+    prisma.post.count({ where }),
   ])
 
   return {
-    posts,
+    posts: posts.map(shapePost),
     pagination: {
       page,
       limit,
@@ -162,11 +189,12 @@ export async function updatePost(userId, postId, input) {
   }
 
   try {
-    return await prisma.post.update({
+    const post = await prisma.post.update({
       where: { id: postId },
       data,
       select: POST_SELECT,
     })
+    return shapePost(post)
   } catch (error) {
     if (error.code === 'P2025') {
       throw postError('Post not found', 404)
