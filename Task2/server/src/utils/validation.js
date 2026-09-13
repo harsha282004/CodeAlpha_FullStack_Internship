@@ -32,6 +32,8 @@ export function isValidPassword(password) {
 
 const MAX_BIO_LENGTH = 500
 const MAX_AVATAR_URL_LENGTH = 2048
+const MAX_POST_CONTENT_LENGTH = 5000
+const MAX_POST_IMAGE_URL_LENGTH = 2048
 
 // null/undefined are accepted here because both mean "no bio" — the caller
 // decides whether that clears an existing value.
@@ -45,15 +47,16 @@ export function normalizeBio(bio) {
   return trimmed.length > 0 ? trimmed : null
 }
 
-// null/undefined/empty all mean "clear the avatar" and are treated as valid;
-// a non-empty value must be a well-formed http(s) URL within a sane length.
-export function isValidAvatarUrl(avatarUrl) {
-  if (avatarUrl === null || avatarUrl === undefined) return true
-  if (typeof avatarUrl !== 'string') return false
+// Shared by avatarUrl and post imageUrl: null/undefined/empty all mean
+// "clear the image" and are treated as valid; a non-empty value must be a
+// well-formed http(s) URL within a sane length.
+function isValidNullableHttpUrl(value, maxLength) {
+  if (value === null || value === undefined) return true
+  if (typeof value !== 'string') return false
 
-  const trimmed = avatarUrl.trim()
+  const trimmed = value.trim()
   if (trimmed.length === 0) return true
-  if (trimmed.length > MAX_AVATAR_URL_LENGTH) return false
+  if (trimmed.length > maxLength) return false
 
   try {
     const parsed = new URL(trimmed)
@@ -63,8 +66,62 @@ export function isValidAvatarUrl(avatarUrl) {
   }
 }
 
-export function normalizeAvatarUrl(avatarUrl) {
-  if (avatarUrl === null || avatarUrl === undefined) return null
-  const trimmed = avatarUrl.trim()
+function normalizeNullableUrl(value) {
+  if (value === null || value === undefined) return null
+  const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+export function isValidAvatarUrl(avatarUrl) {
+  return isValidNullableHttpUrl(avatarUrl, MAX_AVATAR_URL_LENGTH)
+}
+
+export function normalizeAvatarUrl(avatarUrl) {
+  return normalizeNullableUrl(avatarUrl)
+}
+
+export function isValidPostImageUrl(imageUrl) {
+  return isValidNullableHttpUrl(imageUrl, MAX_POST_IMAGE_URL_LENGTH)
+}
+
+export function normalizePostImageUrl(imageUrl) {
+  return normalizeNullableUrl(imageUrl)
+}
+
+export function isValidPostContent(content) {
+  return (
+    typeof content === 'string' && content.trim().length > 0 && content.trim().length <= MAX_POST_CONTENT_LENGTH
+  )
+}
+
+export function normalizePostContent(content) {
+  return typeof content === 'string' ? content.trim() : content
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function isValidUuid(value) {
+  return typeof value === 'string' && UUID_REGEX.test(value)
+}
+
+const DEFAULT_PAGE = 1
+const DEFAULT_LIMIT = 10
+const MAX_LIMIT = 50
+
+// Returns { page, limit } or null if the query params are malformed —
+// the caller decides what error that becomes.
+export function parsePagination(query = {}) {
+  let page = DEFAULT_PAGE
+  if (query.page !== undefined) {
+    page = Number(query.page)
+    if (!Number.isInteger(page) || page < 1) return null
+  }
+
+  let limit = DEFAULT_LIMIT
+  if (query.limit !== undefined) {
+    limit = Number(query.limit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) return null
+  }
+
+  return { page, limit }
 }
