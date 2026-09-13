@@ -29,3 +29,42 @@ export function isValidEmail(email) {
 export function isValidPassword(password) {
   return typeof password === 'string' && password.length >= 8 && password.length <= 72
 }
+
+const MAX_BIO_LENGTH = 500
+const MAX_AVATAR_URL_LENGTH = 2048
+
+// null/undefined are accepted here because both mean "no bio" — the caller
+// decides whether that clears an existing value.
+export function isValidBio(bio) {
+  return bio === null || bio === undefined || (typeof bio === 'string' && bio.trim().length <= MAX_BIO_LENGTH)
+}
+
+export function normalizeBio(bio) {
+  if (bio === null || bio === undefined) return null
+  const trimmed = bio.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+// null/undefined/empty all mean "clear the avatar" and are treated as valid;
+// a non-empty value must be a well-formed http(s) URL within a sane length.
+export function isValidAvatarUrl(avatarUrl) {
+  if (avatarUrl === null || avatarUrl === undefined) return true
+  if (typeof avatarUrl !== 'string') return false
+
+  const trimmed = avatarUrl.trim()
+  if (trimmed.length === 0) return true
+  if (trimmed.length > MAX_AVATAR_URL_LENGTH) return false
+
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+export function normalizeAvatarUrl(avatarUrl) {
+  if (avatarUrl === null || avatarUrl === undefined) return null
+  const trimmed = avatarUrl.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
