@@ -1,0 +1,100 @@
+// Prisma schema for Connectly
+// https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  username     String   @unique @db.VarChar(30)
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  bio          String?
+  avatarUrl    String?  @map("avatar_url")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  posts    Post[]
+  comments Comment[]
+  likes    Like[]
+
+  // Follow edges where this user is the one doing the following.
+  following Follow[] @relation("UserFollowing")
+  // Follow edges where this user is the one being followed.
+  followers Follow[] @relation("UserFollowers")
+
+  @@map("users")
+}
+
+model Post {
+  id        String   @id @default(uuid()) @db.Uuid
+  content   String   @db.Text
+  imageUrl  String?  @map("image_url")
+  authorId  String   @map("author_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  author   User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  comments Comment[]
+  likes    Like[]
+
+  @@index([authorId])
+  @@index([createdAt])
+  @@map("posts")
+}
+
+model Comment {
+  id        String   @id @default(uuid()) @db.Uuid
+  content   String   @db.Text
+  postId    String   @map("post_id") @db.Uuid
+  authorId  String   @map("author_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([authorId])
+  @@index([postId, createdAt])
+  @@map("comments")
+}
+
+model Like {
+  userId    String   @map("user_id") @db.Uuid
+  postId    String   @map("post_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  // A composite primary key both identifies the row and guarantees a user
+  // can only like a given post once — no separate unique constraint needed.
+  @@id([userId, postId])
+  @@index([postId])
+  @@map("likes")
+}
+
+model Follow {
+  followerId  String   @map("follower_id") @db.Uuid
+  followingId String   @map("following_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  follower  User @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  // Composite primary key prevents duplicate follow edges. The self-follow
+  // rule (followerId != followingId) is enforced in application logic when
+  // the follow feature is implemented — Prisma has no schema-level check
+  // constraint for this.
+  @@id([followerId, followingId])
+  @@index([followingId])
+  @@map("follows")
+}
