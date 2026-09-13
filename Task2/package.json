@@ -1,0 +1,17 @@
+{
+  "name": "connectly",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "server"
+  ],
+  "scripts": {
+    "install:all": "npm install && cd client && npm install",
+    "dev:client": "npm run dev --prefix client",
+    "dev:server": "npm run dev -w server",
+    "build:client": "npm run build --prefix client"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.2"
+  }
+}
