@@ -3,18 +3,18 @@
   "private": true,
   "version": "0.0.0",
   "workspaces": [
-    "client",
     "server"
   ],
   "scripts": {
-    "dev:client": "npm run dev -w client",
+    "dev:client": "npm run dev --prefix client",
     "dev:server": "npm run dev -w server",
-    "build:client": "npm run build -w client",
+    "build:client": "npm run build --prefix client",
     "prisma:migrate": "npm run prisma:migrate -w server",
     "prisma:studio": "npm run prisma:studio -w server",
     "db:seed": "npm run db:seed -w server"
   },
   "overrides": {
-    "qs": "^6.16.0"
+    "qs": "^6.16.0",
+    "deepmerge-ts": "^8.0.2"
   }
 }
