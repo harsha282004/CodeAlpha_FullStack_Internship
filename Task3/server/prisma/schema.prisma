@@ -1,0 +1,242 @@
+// Prisma schema for TaskFlow
+// https://pris.ly/d/prisma-schema
+//
+// See ../../docs/DATABASE_SCHEMA.md for the full narrative explanation of
+// every model, relationship, index, and deletion-behavior decision below.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_COMMENTED
+  TASK_UPDATED
+  TASK_MOVED
+  PROJECT_MEMBER_ADDED
+  PROJECT_INVITE
+}
+
+enum ActivityType {
+  PROJECT_CREATED
+  MEMBER_ADDED
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_MOVED
+  TASK_ASSIGNED
+  COMMENT_ADDED
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  username     String   @unique @db.VarChar(30)
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  bio          String?
+  avatarUrl    String?  @map("avatar_url")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Content this user has authored. These relations use onDelete: Restrict
+  // (see below), so a user cannot be deleted while any of these exist.
+  ownedProjects Project[] @relation("ProjectOwner")
+  createdTasks  Task[]    @relation("TaskCreator")
+  comments      Comment[] @relation("CommentAuthor")
+  activities    Activity[] @relation("ActivityActor")
+
+  // Purely relational/derived rows. These cascade away when the user is
+  // deleted, since they only make sense in the presence of that user.
+  projectMemberships ProjectMember[]
+  taskAssignments    TaskAssignee[]
+  notifications      Notification[]
+
+  @@map("users")
+}
+
+model Project {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  description String?  @db.Text
+  ownerId     String   @map("owner_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // A user cannot be deleted while they still own a project — ownership
+  // must be transferred or the project deleted first.
+  owner         User            @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  members       ProjectMember[]
+  boards        Board[]
+  tasks         Task[]
+  notifications Notification[]
+  activities    Activity[]
+
+  @@index([ownerId])
+  @@map("projects")
+}
+
+model ProjectMember {
+  projectId String      @map("project_id") @db.Uuid
+  userId    String      @map("user_id") @db.Uuid
+  role      ProjectRole @default(MEMBER)
+  joinedAt  DateTime    @default(now()) @map("joined_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Composite primary key both identifies the row and guarantees a user can
+  // only join a given project once — no separate unique constraint needed.
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+model Board {
+  id        String   @id @default(uuid()) @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  name      String
+  position  Int
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks   Task[]
+
+  @@index([projectId])
+  @@index([projectId, position])
+  @@map("boards")
+}
+
+model Task {
+  id          String       @id @default(uuid()) @db.Uuid
+  // Denormalized alongside boardId: most task queries are project-scoped,
+  // so this avoids joining through Board for the common case.
+  projectId   String       @map("project_id") @db.Uuid
+  boardId     String       @map("board_id") @db.Uuid
+  title       String
+  description String?      @db.Text
+  priority    TaskPriority @default(MEDIUM)
+  position    Int
+  dueDate     DateTime?    @map("due_date")
+  createdById String       @map("created_by_id") @db.Uuid
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  board         Board          @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  // A user cannot be deleted while they still have created tasks on record.
+  createdBy     User           @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  assignees     TaskAssignee[]
+  comments      Comment[]
+  notifications Notification[]
+  activities    Activity[]
+
+  @@index([projectId])
+  @@index([boardId])
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([dueDate])
+  @@map("tasks")
+}
+
+model TaskAssignee {
+  taskId     String   @map("task_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Composite primary key prevents assigning the same user to a task twice.
+  // Application logic (later phase) ensures the assignee is already a
+  // ProjectMember of the task's project — Prisma cannot express that
+  // cross-table constraint declaratively.
+  @@id([taskId, userId])
+  @@index([userId])
+  @@map("task_assignees")
+}
+
+model Comment {
+  id        String   @id @default(uuid()) @db.Uuid
+  taskId    String   @map("task_id") @db.Uuid
+  authorId  String   @map("author_id") @db.Uuid
+  content   String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  // A user cannot be deleted while they still have authored comments.
+  author User @relation("CommentAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([taskId])
+  @@index([authorId])
+  @@index([taskId, createdAt])
+  @@map("comments")
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  type      NotificationType
+  message   String
+  projectId String?          @map("project_id") @db.Uuid
+  taskId    String?          @map("task_id") @db.Uuid
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  // Recipient — deleting the user deletes their notifications with them.
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Optional context pointers. A notification is an actionable pointer to a
+  // specific project/task, so it cascades away when its subject is deleted
+  // rather than dangling (contrast with Activity.taskId below).
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task    Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([read])
+  @@index([userId, read])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+model Activity {
+  id        String       @id @default(uuid()) @db.Uuid
+  projectId String       @map("project_id") @db.Uuid
+  taskId    String?      @map("task_id") @db.Uuid
+  actorId   String       @map("actor_id") @db.Uuid
+  type      ActivityType
+  message   String
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  // Activity is a timeline/audit log — an entry should survive even if the
+  // task it references is later deleted, so this nulls out rather than
+  // cascading (contrast with Notification.taskId above).
+  task    Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  // A user cannot be deleted while they still have recorded activity.
+  actor   User    @relation("ActivityActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
+  @@index([taskId])
+  @@index([actorId])
+  @@map("activities")
+}

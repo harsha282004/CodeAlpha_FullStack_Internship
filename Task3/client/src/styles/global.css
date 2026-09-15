@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* Minimal foundation only — the full TaskFlow design system is built out
+   alongside the real UI in a later phase. */
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}

@@ -1,0 +1,27 @@
+services:
+  # Dedicated local PostgreSQL for TaskFlow (Task3) only. Bound to
+  # 127.0.0.1:5434 so it never collides with Task1's Postgres (5432) or
+  # Task2's Connectly Postgres (5433), and is never reachable off this
+  # machine.
+  task3-postgres:
+    image: postgres:16-alpine
+    container_name: taskflow-task3-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: taskflow
+      POSTGRES_PASSWORD: taskflow_dev_password
+      POSTGRES_DB: taskflow
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - task3_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskflow -d taskflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  task3_postgres_data:
+    name: taskflow_task3_postgres_data
