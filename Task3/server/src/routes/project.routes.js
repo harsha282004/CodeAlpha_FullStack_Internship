@@ -14,6 +14,7 @@ import {
   removeMemberController,
   changeMemberRoleController,
 } from '../controllers/membership.controller.js'
+import boardRoutes from './board.routes.js'
 
 const router = Router()
 
@@ -47,5 +48,10 @@ router.patch(
   requireProjectRole('OWNER'),
   changeMemberRoleController,
 )
+
+// Board routes need only membership (not a specific role) to create/list/
+// view — requireProjectRole is applied per-route inside board.routes.js
+// for the update/delete operations that are OWNER/ADMIN-only.
+router.use('/:projectId/boards', requireProjectMember(), boardRoutes)
 
 export default router

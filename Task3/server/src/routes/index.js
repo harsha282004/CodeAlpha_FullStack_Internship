@@ -11,8 +11,10 @@ router.use('/auth', authRoutes)
 router.use('/users', profileRoutes)
 router.use('/projects', projectRoutes)
 
+// Board routes are nested under /projects/:projectId/boards (mounted from
+// within project.routes.js, not here — see that file).
+//
 // Mounted here in later phases, in this order:
-//   router.use('/boards', boardRoutes)
 //   router.use('/tasks', taskRoutes)
 //   router.use('/comments', commentRoutes)
 //   router.use('/notifications', notificationRoutes)

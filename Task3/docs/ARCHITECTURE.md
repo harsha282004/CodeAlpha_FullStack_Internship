@@ -286,6 +286,11 @@ would only create a place for them to disagree.
 
 ## 12. Board/task relationship
 
+**Board CRUD implemented in Phase 7** (`GET/POST/PATCH/DELETE`
+under `/api/projects/:projectId/boards` — see
+[BOARDS.md](./BOARDS.md) for the full detail); tasks themselves are
+Phase 8.
+
 - A `Project` has many `Board`s (e.g. "To Do", "In Progress", "Review",
   "Done" — names are per-project data, not hardcoded enum values, so
   projects can define their own workflow).
@@ -294,7 +299,23 @@ would only create a place for them to disagree.
   is intentional denormalization for query simplicity and safe indexing.
 - `position` (integer) on both `Board` and `Task` gives deterministic,
   drag-and-drop-friendly ordering without reordering every row on every
-  move (later phase can use fractional/gap-based positions if needed).
+  move (later phase can use fractional/gap-based positions if needed). As
+  of Phase 7, board creation auto-assigns the next position when one isn't
+  supplied (`(current max position in the project) + 1`, or `0` for the
+  first board) — no drag-and-drop renumbering algorithm yet, just enough
+  ordering to be deterministic and to not require the frontend to compute
+  a position.
+- **No board ID is ever reachable through the wrong project's URL.**
+  Every board read/write in Phase 7 checks both that the board exists
+  *and* that `board.projectId` matches the `:projectId` in the request —
+  a board from a different project produces the identical `404` a
+  genuinely nonexistent board would, never a `403` or any other
+  distinguishing detail.
+- **Deleting a board cascades to its tasks** (`Task.board` is
+  `onDelete: Cascade` — see [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md)).
+  Phase 8 hasn't introduced task creation yet, so no `Task` row can
+  currently reference any board; this is documented now so the cascade
+  isn't a surprise once task creation exists.
 
 ```mermaid
 flowchart LR
@@ -389,8 +410,9 @@ breaking change is needed). Current + planned resource layout:
 /api/projects           GET, POST (requireAuth)              — implemented (Phase 6)
 /api/projects/:id       GET, PATCH, DELETE (role-gated)       — implemented (Phase 6)
 /api/projects/:id/members         GET, POST, PATCH, DELETE   — implemented (Phase 6)
-/api/projects/:id/boards          GET, POST
-/api/boards/:id                   PATCH, DELETE
+/api/projects/:id/boards          GET, POST (any member)     — implemented (Phase 7)
+/api/projects/:id/boards/:boardId GET (any member),          — implemented (Phase 7)
+                                   PATCH/DELETE (OWNER/ADMIN)
 /api/projects/:id/tasks            GET, POST
 /api/tasks/:id                     GET, PATCH, DELETE
 /api/tasks/:id/assignees           POST, DELETE
@@ -409,6 +431,18 @@ anyway, and there's no `/:username`-vs-`/search`-style static/dynamic
 ordering hazard here (`/:projectId` and `/:projectId/members` differ by
 path depth, not by competing for the same segment), so splitting them into
 two files would add indirection without solving an actual problem.
+
+Boards (Phase 7) get their own `board.routes.js` rather than growing
+`project.routes.js` further — a real `Router({ mergeParams: true })` mounted
+at `router.use('/:projectId/boards', requireProjectMember(), boardRoutes)`,
+so it inherits `:projectId` from the parent path and the membership check
+from the mount point, and only adds its own `requireProjectRole` where a
+specific board operation needs it. This is also a deliberate change from
+this document's original Phase 0 sketch of a top-level `/api/boards/:id` —
+keeping boards fully nested under their project (`/api/projects/:id/boards/:boardId`)
+made the cross-project isolation check (Section 12) a natural, unavoidable
+part of every lookup, rather than a separate rule to remember for a
+route that could otherwise be reached without ever mentioning its project.
 
 `/api/auth/me` and `/api/users/me` are deliberately separate, not
 duplicates: the former is read-only "who am I" identity data returned as
@@ -584,9 +618,26 @@ never an HTML error page.
   rows and zero duplicate `(projectId, userId)` pairs across the whole
   table; full regression of Phase 3, 4, and 5. See
   [PROJECTS.md](./PROJECTS.md) for the complete scenario list and results.
+- **Phase 7 board verification:** unauthenticated requests rejected on all
+  five endpoints; the full OWNER/ADMIN/MEMBER/non-member matrix for
+  create (any member succeeds, non-member 403), update and delete
+  (OWNER/ADMIN succeed, MEMBER and non-member 403); automatic position
+  assignment across three sequential creates (0, 1, 2) with no
+  `position` supplied; invalid/empty name and unsupported fields (`400`);
+  invalid `position` — negative and non-integer — (`400`); list scoped to
+  the requested project only, in deterministic `position` order; **the
+  critical isolation check** — a board created under Project A returns
+  the identical `404 BOARD_NOT_FOUND` when requested, updated, or deleted
+  through Project B's URL, from a caller who is a legitimate member of
+  Project B — confirming a valid board id from elsewhere is exactly as
+  inaccessible as one that doesn't exist; nonexistent board and
+  nonexistent project both `404`; a real delete verified via direct SQL to
+  leave zero orphaned `boards` rows; full regression of Phase 3, 4, 5, and
+  6. See [BOARDS.md](./BOARDS.md) for the complete scenario list and
+  results.
 - **Database verification:** `prisma migrate`, `prisma db seed`, and direct
   queries (via `prisma studio` or ad hoc scripts) confirm schema integrity
-  and seed idempotency. Phases 4, 5, and 6 required no schema change — the
+  and seed idempotency. Phases 4 through 7 required no schema change — the
   Phase 2 schema already had everything each needed.
 - **Build verification:** `npm run build` for both workspaces must succeed
   with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
@@ -630,9 +681,19 @@ never an HTML error page.
   models and `ProjectRole` enum already had everything this needed. No
   boards, tasks, comments, notifications, Socket.IO, or frontend UI — those
   remain later phases.
-- **Phase 7+ (not started)** — boards/tasks API, comments API,
+- **Phase 7** — project boards: board CRUD
+  (`GET/POST/PATCH/DELETE /api/projects/:projectId/boards[/:boardId]`),
+  reusing Phase 6's `requireProjectMember`/`requireProjectRole` middleware
+  unchanged rather than reimplementing membership checks. Automatic
+  `position` assignment on create; strict board-belongs-to-this-project
+  enforcement on every read and write (a board from elsewhere is a `404`,
+  identical to a nonexistent one). No schema change — the Phase 2 `Board`
+  model already had everything this needed. No task cards (that's what
+  boards will eventually contain, in Phase 8), no reordering algorithm
+  beyond automatic next-position assignment, no frontend UI.
+- **Phase 8+ (not started)** — task cards API, comments API,
   notifications API, full frontend (dashboard, Kanban board, task detail
-  view, login/register/project UI), Socket.IO real-time layer.
+  view, login/register/project/board UI), Socket.IO real-time layer.
 
 ## 23. Data flow
 
@@ -778,3 +839,34 @@ Example: a user moves a task to a different board.
   included, so a project the caller doesn't belong to is never fetched from
   the database in the first place, let alone filtered out in application
   code afterward.
+- **A board's project-membership is verified once, in one helper, reused
+  by every board operation** — `getBoardWithinProject()`
+  (`board.service.js`) is the single place that checks both "does this
+  board exist" and "does it belong to this project," and `getBoard`,
+  `updateBoard`, and `deleteBoard` all call it before doing anything else.
+  Writing that check three times (or worse, only in the detail route and
+  assuming update/delete are safe by extension) is exactly the kind of
+  duplication that eventually drifts — one route gets the check updated,
+  another doesn't.
+- **A board from the wrong project is a `404`, structurally identical to
+  a board that doesn't exist at all** — unlike the project-membership
+  distinction in Section 10 (missing project → 404, existing-but-excluded
+  → 403), a board has no independent identity worth confirming to a
+  caller who names the wrong project for it. There's nothing a `403` here
+  would tell the truth about that a `404` doesn't already cover, and a
+  `403` would additionally confirm "yes, that board id is real, just not
+  yours to see" — one bit of information Phase 7 has no reason to hand
+  out.
+- **Board routes reuse `requireProjectRole('OWNER', 'ADMIN')` verbatim
+  from Phase 6, not a new board-specific permission concept** — the
+  question "can this caller restructure this project" doesn't change
+  depending on whether the thing being restructured is the project's own
+  fields or one of its boards; introducing a separate authorization
+  vocabulary for boards would only create two things to keep in sync for
+  one underlying rule.
+- **Board position auto-assignment is a `MAX(position) + 1` aggregate
+  query, not a stored "next position" counter** — a stored counter would
+  need to be kept correct across every insert and delete (and get out of
+  sync the moment anything touches the table outside the API, e.g. the
+  seed script); computing it fresh from the current rows is one query and
+  cannot drift.
