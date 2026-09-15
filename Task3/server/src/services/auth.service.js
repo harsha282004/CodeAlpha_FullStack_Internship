@@ -3,22 +3,15 @@ import { prisma } from '../config/prisma.js'
 import { AppError } from '../utils/AppError.js'
 import { hashPassword, verifyPassword } from '../utils/password.js'
 import { signAccessToken } from '../utils/jwt.js'
-import { toSafeUser } from '../utils/user.js'
+import { toSafeUser, PRIVATE_USER_SELECT } from '../utils/user.js'
 
-// Selected once per query purpose — the two lists intentionally differ:
-// login needs passwordHash to verify against, everything else must not be
-// able to select it at all. That's the security boundary, enforced at the
-// query itself rather than trusted to a serializer downstream.
-const SAFE_SELECT = {
-  id: true,
-  name: true,
-  username: true,
-  email: true,
-  bio: true,
-  avatarUrl: true,
-  createdAt: true,
-  updatedAt: true,
-}
+// The two shapes intentionally differ: login needs passwordHash to verify
+// against, everything else must not be able to select it at all. That's the
+// security boundary, enforced at the query itself rather than trusted to a
+// serializer downstream. PRIVATE_USER_SELECT is shared with profile.service.js
+// (Phase 5) so both modules describe "the authenticated user's own view of
+// themselves" with one definition, not two that could drift apart.
+const SAFE_SELECT = PRIVATE_USER_SELECT
 
 const AUTH_SELECT = {
   ...SAFE_SELECT,

@@ -7,19 +7,20 @@ assignments, and comments — built with React, Express, and PostgreSQL.
 
 ## Status
 
-**Current phase: Phase 4 complete (authentication).** Architecture is
+**Current phase: Phase 5 complete (user profiles).** Architecture is
 documented, the monorepo scaffolding (client + server) runs, the full Prisma
 schema + seed data are in place, the Express API has its production-ready
 foundation (centralized error handling, restricted CORS, security headers,
-request-size limits, graceful shutdown), and real registration/login/JWT
-authentication now runs against PostgreSQL.
+request-size limits, graceful shutdown), real registration/login/JWT
+authentication runs against PostgreSQL, and authenticated users can now
+view/edit their profile and look up or search for other users.
 
 No other application features are implemented yet: projects, boards, tasks,
 comments, notifications, and the real dashboard/Kanban UI are all planned
 for later phases. The homepage still only confirms the frontend can reach
-the API and the database — there is no login/register UI yet, since
-frontend authentication is a later phase. `/api` currently exposes `health`
-and `auth` only.
+the API and the database — there is no login/register/profile UI yet, since
+the frontend for any of this is a later phase. `/api` currently exposes
+`health`, `auth`, and `users` only.
 
 ## Stack
 
@@ -158,11 +159,13 @@ error — is JSON with a `success` boolean:
 | `GET` | `/api/health/db` | 200 if Prisma can reach PostgreSQL (`SELECT 1`); 503 if not |
 | any | anything else under `/api` | 404 JSON (`code: "NOT_FOUND"`), never an HTML error page |
 
-Everything else (`/api/users`, `/api/projects`, `/api/boards`, `/api/tasks`,
+Everything else (`/api/projects`, `/api/boards`, `/api/tasks`,
 `/api/comments`, `/api/notifications`) is deliberately not mounted yet —
-those are later phases. `/api/auth` is now live — see
-[Authentication (Phase 4)](#authentication-phase-4) below and
-[docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md) for the full detail.
+those are later phases. `/api/auth` and `/api/users` are now live — see
+[Authentication (Phase 4)](#authentication-phase-4) and
+[User profiles (Phase 5)](#user-profiles-phase-5) below, plus
+[docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md) and
+[docs/USER_PROFILES.md](./docs/USER_PROFILES.md) for the full detail.
 
 **Middleware order:** `helmet` → CORS → request logger (dev only) →
 `express.json` (100kb limit) → `/api` router → 404 handler → centralized
@@ -240,18 +243,68 @@ No frontend login/register UI exists yet — that's a later phase. The
 backend works completely independently through the API, verified with
 `curl` throughout development.
 
+## User profiles (Phase 5)
+
+Public profile lookup, the authenticated user's own profile (view + edit),
+and user search — all backed by the same `User` model, no new tables. Full
+detail lives in [docs/USER_PROFILES.md](./docs/USER_PROFILES.md); this is
+the short version.
+
+**Routes:**
+
+| Method | Path | Auth required | Behavior |
+|---|---|---|---|
+| `GET` | `/api/users/search?q=&page=&limit=` | no | Case-insensitive username/name search. `200`, or `400` if `q` is missing/empty or `page`/`limit` are invalid |
+| `GET` | `/api/users/me` | **yes** | The authenticated user's own profile (includes `email`) |
+| `PATCH` | `/api/users/me` | **yes** | Partial update to `name`/`username`/`bio`/`avatarUrl` only |
+| `GET` | `/api/users/:username` | no | Anyone's public profile (no `email`, no `updatedAt`). `404` if no such user |
+
+`/search` and `/me` are registered **before** `/:username` in
+`profile.routes.js` — otherwise Express would treat a request for
+`/api/users/search` or `/api/users/me` as a lookup for a user literally
+named `search` or `me`.
+
+**Two response shapes, not one:** a public profile
+(`id`, `name`, `username`, `bio`, `avatarUrl`, `createdAt`) never includes
+`email` or `passwordHash`; the private `/me` view additionally includes
+`email` and `updatedAt` — still never `passwordHash`. Both are produced by
+the same allow-list serializers used since Phase 4
+(`server/src/utils/user.js`), extended with a second `toPublicUser()`
+function rather than a duplicate, possibly-drifting definition.
+
+**`PATCH /api/users/me` only ever touches the caller's own row** — the
+target is always `req.user.id` from the verified JWT, never a client-supplied
+id. There is no `PATCH /api/users/:id` in this phase. Only `name`,
+`username`, `bio`, and `avatarUrl` are editable; supplying `email`,
+`password`, `id`, `createdAt`, or anything else is a `400`, not a silently
+ignored field. An empty body (`{}`) is also a `400` — there's nothing to
+update. Sending `bio: ""` or `avatarUrl: ""` explicitly *clears* that field
+(stored as `null`) rather than being rejected.
+
+**Username uniqueness:** changing `username` to one already taken by
+someone else is a `409`; changing it to the value it already has succeeds
+as a no-op (Postgres's own unique constraint doesn't conflict with a value
+already held by that same row).
+
+**Search** requires a non-empty `q` (`400` otherwise — an unrestricted "list
+everyone" isn't a supported query), matches `username` OR `name`
+case-insensitively via Postgres `ILIKE`, and paginates in the database
+(`skip`/`take`), never in application code. `limit` defaults to 10, capped
+at 50; `page` defaults to 1. Both must be positive integers or the request
+is a `400`.
+
 ## Current phase
 
 Phase 0 (architecture/planning), Phase 1 (scaffolding), Phase 2 (database
-layer), Phase 3 (backend foundation), and Phase 4 (authentication) are
-complete. User profile editing, the projects/boards/tasks REST API,
-comments, notifications, Socket.IO real-time updates, and the full frontend
-UI (including a login/register experience) are planned for subsequent
+layer), Phase 3 (backend foundation), Phase 4 (authentication), and Phase 5
+(user profiles) are complete. The projects/boards/tasks REST API, comments,
+notifications, Socket.IO real-time updates, and the full frontend UI
+(including a login/register/profile experience) are planned for subsequent
 phases.
 
 ## Planned features
 
-- Profile management, project creation, invite members, assign roles
+- Project creation, invite members, assign roles
 - Boards and drag-and-drop task cards
 - Task assignment, priorities, due dates, task detail view
 - Comments on tasks

@@ -348,7 +348,9 @@ breaking change is needed). Current + planned resource layout:
 /api/health/db         GET                          — implemented (Phase 3)
 /api/auth              POST /register, POST /login, — implemented (Phase 4)
                        GET /me (requireAuth)
-/api/users/me           GET, PATCH                  — planned (Phase 5, profile editing)
+/api/users/search       GET (public)                 — implemented (Phase 5)
+/api/users/me           GET, PATCH (requireAuth)     — implemented (Phase 5)
+/api/users/:username    GET (public)                 — implemented (Phase 5)
 /api/projects           GET, POST
 /api/projects/:id       GET, PATCH, DELETE
 /api/projects/:id/members         GET, POST, PATCH, DELETE
@@ -366,11 +368,14 @@ breaking change is needed). Current + planned resource layout:
 Each resource group gets its own `routes/*.routes.js`, mounted from a single
 `routes/index.js`, matching the Task2 convention.
 
-`/api/auth/me` and the planned `/api/users/me` are deliberately separate:
-the former is read-only "who am I" identity data returned as part of the
-auth module (Phase 4), the latter is full profile editing (Phase 5) —
-merging them would make the auth module depend on profile business logic
-it has no reason to know about.
+`/api/auth/me` and `/api/users/me` are deliberately separate, not
+duplicates: the former is read-only "who am I" identity data returned as
+part of the auth module (Phase 4) and exists mainly so a freshly-issued
+token can be confirmed against the server; the latter (Phase 5) is the
+actual profile — the same data plus PATCH support — served from its own
+module so the auth module still has no reason to know about profile
+business logic (validation rules, username-uniqueness handling) that isn't
+its concern. See [USER_PROFILES.md](./USER_PROFILES.md) for the full detail.
 
 ## 18. Error-handling strategy
 
@@ -503,10 +508,26 @@ never an HTML error page.
   of every Phase 3 behavior (health, 404, malformed JSON, oversized body,
   CORS). See [AUTHENTICATION.md](./AUTHENTICATION.md) for the complete
   scenario list and results.
+- **Phase 5 user profile verification:** public profile lookup (existing
+  seeded username, nonexistent username → 404, mixed-case URL segment
+  resolving via lowercase normalization); `/me` GET with valid/missing/
+  invalid tokens; every PATCH scenario (each field individually, multiple
+  fields together, empty body → 400, every disallowed field — `email`,
+  `password`, `passwordHash`, `id`, `createdAt` — → 400, invalid username
+  shape → 400, duplicate username → 409, username-to-its-own-current-value
+  → 200 no-op, oversized bio → 400, `javascript:`/`data:` avatar URLs →
+  400, clearing `bio`/`avatarUrl` with `""` → `null`, unauthenticated PATCH
+  → 401); search (case-insensitive match against username and name, `q`
+  required, pagination metadata correct across two pages with zero
+  overlapping rows, every invalid `page`/`limit`/`q` → 400); confirmed
+  `passwordHash` absent from all three response types; confirmed the route
+  order (`/search`, `/me` before `/:username`) via a diagnostic 401 vs. 404
+  distinction; full regression of Phase 3 and Phase 4. See
+  [USER_PROFILES.md](./USER_PROFILES.md) for the complete scenario list.
 - **Database verification:** `prisma migrate`, `prisma db seed`, and direct
   queries (via `prisma studio` or ad hoc scripts) confirm schema integrity
-  and seed idempotency. Phase 4 required no schema change — the Phase 2
-  `User` model already had everything authentication needs.
+  and seed idempotency. Neither Phase 4 nor Phase 5 required a schema
+  change — the Phase 2 `User` model already had everything both needed.
 - **Build verification:** `npm run build` for both workspaces must succeed
   with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
   independently.
@@ -535,7 +556,14 @@ never an HTML error page.
   serialization. No schema change — the Phase 2 `User` model already had
   everything this needed. No authorization (project roles), no profile
   editing, no frontend auth UI — those remain later phases.
-- **Phase 5+ (not started)** — user profile editing, projects/members API,
+- **Phase 5** — user profiles: public profile lookup (`GET /api/users/:username`),
+  the authenticated user's own profile (`GET`/`PATCH /api/users/me`), and
+  user search (`GET /api/users/search`). Extends the Phase 4 serialization
+  utility with a `toPublicUser()` view rather than duplicating it. No
+  schema change, no new dependency, no authorization system (still just
+  `requireAuth` — "is this you," not "are you allowed to"), no profile
+  editing UI.
+- **Phase 6+ (not started)** — projects/members API,
   boards/tasks API, comments API, notifications API, full frontend
   (dashboard, Kanban board, task detail view, login/register UI),
   Socket.IO real-time layer.
@@ -634,3 +662,26 @@ Example: a user moves a task to a different board.
   The dummy hash is computed once per process (not per request) purely to
   keep that comparison's cost consistent — it is not, and is never used as,
   a real password.
+- **`toPublicUser()` is a second function, not a parameter on `toSafeUser()`**
+  (e.g. `toSafeUser(user, { includeEmail: false })`) — a boolean flag toggling
+  which fields come back is exactly the kind of "one function, two
+  contradictory behaviors" the safe-serialization discipline is meant to
+  prevent. Two small, single-purpose functions are easier to audit than one
+  with a mode switch.
+- **`PATCH /api/users/me` whitelists fields, it doesn't blocklist them** —
+  the four editable fields (`name`, `username`, `bio`, `avatarUrl`) are the
+  only keys the validator recognizes; everything else (`email`, `password`,
+  `id`, `createdAt`, `updatedAt`, or a field that doesn't exist yet) is
+  rejected by the same code path. A blocklist would need updating every
+  time a new column is added to `User`; this whitelist doesn't.
+- **Search requires a non-empty `q`, with no "browse all users" mode** —
+  an endpoint that's public by design (needed later for adding project
+  members/assignees) must not double as a way to dump the entire user
+  table. Requiring `q` means every result set is already narrowed by the
+  database query itself, not filtered after the fact.
+- **Public username lookup normalizes to lowercase before querying, not
+  after** — since usernames are always stored lowercase, canonicalizing the
+  URL segment (`/Alice_Johnson` → looks up `alice_johnson`) is pure
+  identifier resolution, not the same "don't silently rewrite what the user
+  typed" concern that applies to registration/update input. Nothing is
+  written back to the database here — only read.
