@@ -7,20 +7,23 @@ assignments, and comments — built with React, Express, and PostgreSQL.
 
 ## Status
 
-**Current phase: Phase 5 complete (user profiles).** Architecture is
+**Current phase: Phase 6 complete (projects & membership).** Architecture is
 documented, the monorepo scaffolding (client + server) runs, the full Prisma
 schema + seed data are in place, the Express API has its production-ready
 foundation (centralized error handling, restricted CORS, security headers,
 request-size limits, graceful shutdown), real registration/login/JWT
-authentication runs against PostgreSQL, and authenticated users can now
-view/edit their profile and look up or search for other users.
+authentication runs against PostgreSQL, authenticated users can view/edit
+their profile and look up or search for other users, and users can now
+create projects, manage OWNER/ADMIN/MEMBER membership, and every write is
+authorized against the caller's actual role in PostgreSQL — never a role
+the client claims to have.
 
-No other application features are implemented yet: projects, boards, tasks,
-comments, notifications, and the real dashboard/Kanban UI are all planned
-for later phases. The homepage still only confirms the frontend can reach
-the API and the database — there is no login/register/profile UI yet, since
-the frontend for any of this is a later phase. `/api` currently exposes
-`health`, `auth`, and `users` only.
+No other application features are implemented yet: boards, tasks, comments,
+notifications, and the real dashboard/Kanban UI are all planned for later
+phases. The homepage still only confirms the frontend can reach the API and
+the database — there is no login/register/profile/project UI yet, since the
+frontend for any of this is a later phase. `/api` currently exposes
+`health`, `auth`, `users`, and `projects` only.
 
 ## Stack
 
@@ -159,13 +162,15 @@ error — is JSON with a `success` boolean:
 | `GET` | `/api/health/db` | 200 if Prisma can reach PostgreSQL (`SELECT 1`); 503 if not |
 | any | anything else under `/api` | 404 JSON (`code: "NOT_FOUND"`), never an HTML error page |
 
-Everything else (`/api/projects`, `/api/boards`, `/api/tasks`,
-`/api/comments`, `/api/notifications`) is deliberately not mounted yet —
-those are later phases. `/api/auth` and `/api/users` are now live — see
-[Authentication (Phase 4)](#authentication-phase-4) and
-[User profiles (Phase 5)](#user-profiles-phase-5) below, plus
-[docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md) and
-[docs/USER_PROFILES.md](./docs/USER_PROFILES.md) for the full detail.
+Everything else (`/api/boards`, `/api/tasks`, `/api/comments`,
+`/api/notifications`) is deliberately not mounted yet — those are later
+phases. `/api/auth`, `/api/users`, and `/api/projects` are now live — see
+[Authentication (Phase 4)](#authentication-phase-4),
+[User profiles (Phase 5)](#user-profiles-phase-5), and
+[Projects & membership (Phase 6)](#projects--membership-phase-6) below,
+plus [docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md),
+[docs/USER_PROFILES.md](./docs/USER_PROFILES.md), and
+[docs/PROJECTS.md](./docs/PROJECTS.md) for the full detail.
 
 **Middleware order:** `helmet` → CORS → request logger (dev only) →
 `express.json` (100kb limit) → `/api` router → 404 handler → centralized
@@ -293,18 +298,64 @@ case-insensitively via Postgres `ILIKE`, and paginates in the database
 at 50; `page` defaults to 1. Both must be positive integers or the request
 is a `400`.
 
+## Projects & membership (Phase 6)
+
+Project CRUD, OWNER/ADMIN/MEMBER membership, and the authorization layer
+every later resource (boards, tasks, comments, notifications) will build on
+top of. Full detail — including every authorization rule and the complete
+test matrix — lives in [docs/PROJECTS.md](./docs/PROJECTS.md); this is the
+short version.
+
+**Routes** (all under `/api/projects`, all require `Authorization: Bearer <token>`):
+
+| Method | Path | Minimum role | Behavior |
+|---|---|---|---|
+| `POST` | `/` | any authenticated user | Creates a project; caller becomes `OWNER` |
+| `GET` | `/` | — | Lists only projects the caller belongs to, paginated |
+| `GET` | `/:projectId` | member | Project detail, including the caller's role |
+| `PATCH` | `/:projectId` | OWNER or ADMIN | Partial update to `name`/`description` |
+| `DELETE` | `/:projectId` | OWNER | Deletes the project and everything under it |
+| `POST` | `/:projectId/members` | OWNER or ADMIN | Adds an existing user (default role `MEMBER`) |
+| `GET` | `/:projectId/members` | member | Lists members, safe fields only |
+| `DELETE` | `/:projectId/members/:userId` | OWNER or ADMIN | Removes a member — never the owner |
+| `PATCH` | `/:projectId/members/:userId` | **OWNER only** | Changes a member's role between `ADMIN`/`MEMBER` — never the owner's |
+
+**A non-member gets a `403`, not a `404`, for an existing project they
+don't belong to** — but a project that genuinely doesn't exist (or a
+malformed id) is still a clean `404`. The two are deliberately
+distinguishable and both deliberately reveal nothing else.
+
+**No role is ever trusted from the request.** Every project route reads the
+caller's role fresh from `ProjectMember` in PostgreSQL
+(`requireProjectMember`/`requireProjectRole` — see
+[docs/PROJECTS.md](./docs/PROJECTS.md#authorization-design)), never from a
+JWT claim, a body field, or a query parameter. `role: "OWNER"` in a
+membership request body is rejected by validation before it ever reaches
+that check — there is exactly one OWNER per project (whoever created it),
+and neither adding a member nor changing a role can ever produce a second
+one or touch the first.
+
+**The owner can't be removed or reassigned through the membership
+endpoints** — by an admin, or even by the owner themself. Leaving
+ownership behind is `DELETE /api/projects/:projectId`, not member removal.
+
+**Deleting a project cascades entirely** (memberships, boards, tasks —
+whichever of those exist by the time later phases add them) via the
+`onDelete: Cascade` relations already declared in Phase 2's schema — one
+`DELETE`, no orphaned rows, verified directly against the database during
+testing.
+
 ## Current phase
 
 Phase 0 (architecture/planning), Phase 1 (scaffolding), Phase 2 (database
-layer), Phase 3 (backend foundation), Phase 4 (authentication), and Phase 5
-(user profiles) are complete. The projects/boards/tasks REST API, comments,
-notifications, Socket.IO real-time updates, and the full frontend UI
-(including a login/register/profile experience) are planned for subsequent
-phases.
+layer), Phase 3 (backend foundation), Phase 4 (authentication), Phase 5
+(user profiles), and Phase 6 (projects & membership) are complete. Boards,
+tasks, comments, notifications, Socket.IO real-time updates, and the full
+frontend UI (including a login/register/profile/project experience) are
+planned for subsequent phases.
 
 ## Planned features
 
-- Project creation, invite members, assign roles
 - Boards and drag-and-drop task cards
 - Task assignment, priorities, due dates, task detail view
 - Comments on tasks

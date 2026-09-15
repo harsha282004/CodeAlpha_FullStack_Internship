@@ -215,39 +215,74 @@ sequenceDiagram
     Note over A,S: A future GET /api/projects (Phase 6+) follows the same<br/>requireAuth step, then adds a project-role authorization<br/>check before reaching its service — see Section 10.
 ```
 
-## 10. Authorization architecture (planned — later phase)
+## 10. Authorization architecture
 
-Not implemented yet — deliberately out of scope for Phase 4, which only
-establishes *authentication* (proving who is calling). Authorization
-(deciding what that caller is allowed to do) is a separate concern, built
-once there's a resource worth restricting:
+**Implemented in Phase 6.** Role-based, scoped to a project via
+`ProjectMember.role`. Full detail — every endpoint, every rule, the
+complete test matrix — lives in [PROJECTS.md](./PROJECTS.md); this section
+stays at the architectural level.
 
-Role-based, scoped to a project via `ProjectMember.role`:
+- **OWNER** — full control: rename project, manage members and roles,
+  delete the project. Exactly one per project, set at creation and never
+  reassigned by any endpoint in this phase.
+- **ADMIN** — update project details, add/remove members (never the
+  owner), cannot delete the project or change anyone's role.
+- **MEMBER** — a project participant with no management privileges over
+  the project or its membership (task-level permissions arrive with
+  Phase 7+, once tasks exist).
 
-- **OWNER** — full control: rename/delete project, manage members and roles,
-  transfer ownership.
-- **ADMIN** — manage boards/tasks/members, cannot delete the project or
-  remove the owner.
-- **MEMBER** — create/update/move/comment on tasks, cannot manage membership.
+The `requireAuth` middleware (Section 9) verifies the JWT and attaches
+`req.user = { id }`. Two new middleware, run in sequence after it
+(`server/src/middleware/projectAuth.middleware.js`):
 
-The `requireAuth` middleware (Section 9, implemented) verifies the JWT and
-attaches `req.user = { id }`. A separate `requireProjectRole(minRole)`
-middleware (later phase) will run *after* `requireAuth`, load the caller's
-`ProjectMember` row for the `:projectId` in the route, and reject with 403
-if the role is insufficient. Ownership is always cross-checked against
-`Project.ownerId`, not just `ProjectMember.role`, since the owner row is
-authoritative.
+- **`requireProjectMember()`** — looks up the caller's `ProjectMember` row
+  for `:projectId` from PostgreSQL and attaches
+  `req.projectMembership = { projectId, role }`. Distinguishes a project
+  that doesn't exist (`404`) from one that exists but the caller isn't in
+  (`403`) — a non-member learns nothing beyond what a generic 404 already
+  tells anyone, but a genuinely missing project isn't reported as if it
+  existed and merely excluded them.
+- **`requireProjectRole(...allowedRoles)`** — checks the already-looked-up
+  role against an explicit allow-list, e.g. `requireProjectRole('OWNER', 'ADMIN')`.
+  An allow-list rather than a single `minRole` threshold, since only two
+  combinations are ever actually used (`['OWNER']` and
+  `['OWNER', 'ADMIN']`) — encoding a full role ordering/hierarchy for that
+  would be more machinery than the two real cases justify.
+
+Neither middleware ever reads a role from the request body, a query
+parameter, or the JWT payload (which, per Section 9, only ever contains
+`sub`) — the role is always the one just read from `ProjectMember` in the
+same request.
+
+Ownership itself is tracked in exactly one authoritative place per project
+at any time: the `ProjectMember` row with `role = OWNER`. `Project.ownerId`
+is set to match at creation (in the same transaction) and is never
+independently mutated afterward — `PATCH /api/projects/:id` only accepts
+`name`/`description`, and no endpoint changes who owns a project — so the
+two never have a chance to drift apart. Authorization checks read
+`ProjectMember.role` (that's what a request is actually asking
+"about this project, as this membership"), not a separate `ownerId`
+comparison, since maintaining two authoritative sources for the same fact
+would only create a place for them to disagree.
 
 ## 11. Project membership model
 
 - `Project.ownerId` is the single source of truth for who owns a project.
 - Every project also has a corresponding `ProjectMember` row for its owner
   (`role = OWNER`), so membership listings/queries never need a special
-  case for "is this the owner." Service-layer logic (later phase) is
-  responsible for keeping these two facts in sync — e.g. creating that
-  `ProjectMember` row transactionally when a `Project` is created.
+  case for "is this the owner." **Implemented in Phase 6:**
+  `project.service.js`'s `createProject` creates both rows in one
+  `prisma.$transaction` — a project can never exist without its owner
+  membership, even if the process crashes mid-request.
 - `(projectId, userId)` is a composite primary key on `ProjectMember`,
-  guaranteeing a user cannot join the same project twice.
+  guaranteeing a user cannot join the same project twice — Phase 6's
+  `addMember` relies on this constraint directly (catching Prisma's
+  `P2002` and converting it to a `409`) rather than a separate
+  check-then-insert race.
+- The OWNER's `ProjectMember` row is structurally protected: neither
+  `removeMember` nor `changeMemberRole` (Phase 6) will act on a row whose
+  role is `OWNER`, regardless of who is calling — the only way to stop
+  being a project's owner is to delete the project itself.
 
 ## 12. Board/task relationship
 
@@ -351,9 +386,9 @@ breaking change is needed). Current + planned resource layout:
 /api/users/search       GET (public)                 — implemented (Phase 5)
 /api/users/me           GET, PATCH (requireAuth)     — implemented (Phase 5)
 /api/users/:username    GET (public)                 — implemented (Phase 5)
-/api/projects           GET, POST
-/api/projects/:id       GET, PATCH, DELETE
-/api/projects/:id/members         GET, POST, PATCH, DELETE
+/api/projects           GET, POST (requireAuth)              — implemented (Phase 6)
+/api/projects/:id       GET, PATCH, DELETE (role-gated)       — implemented (Phase 6)
+/api/projects/:id/members         GET, POST, PATCH, DELETE   — implemented (Phase 6)
 /api/projects/:id/boards          GET, POST
 /api/boards/:id                   PATCH, DELETE
 /api/projects/:id/tasks            GET, POST
@@ -366,7 +401,14 @@ breaking change is needed). Current + planned resource layout:
 ```
 
 Each resource group gets its own `routes/*.routes.js`, mounted from a single
-`routes/index.js`, matching the Task2 convention.
+`routes/index.js`, matching the Task2 convention. `project.routes.js`
+(Phase 6) holds both the project CRUD routes and the nested
+`/:projectId/members/*` routes in one file rather than a separate nested
+router — the membership routes need `:projectId` from the parent path
+anyway, and there's no `/:username`-vs-`/search`-style static/dynamic
+ordering hazard here (`/:projectId` and `/:projectId/members` differ by
+path depth, not by competing for the same segment), so splitting them into
+two files would add indirection without solving an actual problem.
 
 `/api/auth/me` and `/api/users/me` are deliberately separate, not
 duplicates: the former is read-only "who am I" identity data returned as
@@ -524,10 +566,28 @@ never an HTML error page.
   order (`/search`, `/me` before `/:username`) via a diagnostic 401 vs. 404
   distinction; full regression of Phase 3 and Phase 4. See
   [USER_PROFILES.md](./USER_PROFILES.md) for the complete scenario list.
+- **Phase 6 project & membership verification:** full project CRUD
+  (create with invalid/unsupported input, list scoped to only the caller's
+  own memberships, detail with the caller's role, partial update); the
+  complete OWNER/ADMIN/MEMBER/non-member authorization matrix for update,
+  delete, add-member, remove-member, and change-role — each tested from
+  every role, not just the ones expected to succeed; duplicate membership
+  (409), nonexistent target user (404), invalid/`OWNER` role in a
+  membership request (400, rejected by validation before reaching the
+  service); the owner-protection rules (cannot be removed, cannot have
+  their role changed, by anyone, including themself); a genuinely missing
+  project (404) vs. an existing one the caller isn't in (403), confirmed as
+  distinguishable; two independently-owned projects confirmed fully
+  isolated from each other (a member of one gets 403 on every operation
+  against the other, including trying to add themself as a member); a real
+  `DELETE` verified via direct SQL to leave zero orphaned `project_members`
+  rows and zero duplicate `(projectId, userId)` pairs across the whole
+  table; full regression of Phase 3, 4, and 5. See
+  [PROJECTS.md](./PROJECTS.md) for the complete scenario list and results.
 - **Database verification:** `prisma migrate`, `prisma db seed`, and direct
   queries (via `prisma studio` or ad hoc scripts) confirm schema integrity
-  and seed idempotency. Neither Phase 4 nor Phase 5 required a schema
-  change — the Phase 2 `User` model already had everything both needed.
+  and seed idempotency. Phases 4, 5, and 6 required no schema change — the
+  Phase 2 schema already had everything each needed.
 - **Build verification:** `npm run build` for both workspaces must succeed
   with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
   independently.
@@ -563,10 +623,16 @@ never an HTML error page.
   schema change, no new dependency, no authorization system (still just
   `requireAuth` — "is this you," not "are you allowed to"), no profile
   editing UI.
-- **Phase 6+ (not started)** — projects/members API,
-  boards/tasks API, comments API, notifications API, full frontend
-  (dashboard, Kanban board, task detail view, login/register UI),
-  Socket.IO real-time layer.
+- **Phase 6** — projects & membership: project CRUD, OWNER/ADMIN/MEMBER
+  roles, and the `requireProjectMember`/`requireProjectRole` authorization
+  middleware every later resource (boards, tasks, comments, notifications)
+  will reuse. No schema change — the Phase 2 `Project`/`ProjectMember`
+  models and `ProjectRole` enum already had everything this needed. No
+  boards, tasks, comments, notifications, Socket.IO, or frontend UI — those
+  remain later phases.
+- **Phase 7+ (not started)** — boards/tasks API, comments API,
+  notifications API, full frontend (dashboard, Kanban board, task detail
+  view, login/register/project UI), Socket.IO real-time layer.
 
 ## 23. Data flow
 
@@ -685,3 +751,30 @@ Example: a user moves a task to a different board.
   identifier resolution, not the same "don't silently rewrite what the user
   typed" concern that applies to registration/update input. Nothing is
   written back to the database here — only read.
+- **A malformed `:projectId` or `:userId` path segment is treated as "not
+  found," not "bad request"** (`requireProjectMember`,
+  `membership.service.js`'s `assertValidUserId`) — a route parameter
+  identifies a specific resource, and a value that can't possibly match one
+  gets the same 404 a valid-but-nonexistent id would, rather than a
+  differently-shaped 400 for what is, from the caller's perspective, the
+  same fact: this thing doesn't exist. It also sidesteps Prisma throwing its
+  own validation error for a non-UUID value passed to a `@db.Uuid` column.
+- **`requireProjectRole` takes an explicit list of roles, not a `minRole`
+  threshold** — a threshold implies a total ordering (`OWNER > ADMIN >
+  MEMBER`) that would need to be encoded and kept correct somewhere; an
+  allow-list just states, per route, exactly which roles may proceed. With
+  only two combinations ever used in this phase (`['OWNER']` and
+  `['OWNER', 'ADMIN']`), the ordering would be pure ceremony.
+- **Membership-role validation rejects `OWNER` before any service or
+  database code runs** (`membership.validator.js`'s `ASSIGNABLE_ROLES`) —
+  "a client cannot grant themselves or anyone else ownership through a
+  request payload" is enforced as *this value is not a valid input*, not as
+  a check a service author has to remember to add. The service layer's own
+  refusal to touch a row whose role is already `OWNER` is a second,
+  independent backstop for the same invariant, not a substitute for it.
+- **`GET /api/projects` queries through `ProjectMember`, never `Project`
+  with an after-the-fact filter** — `listProjectsForUser` (`project.service.js`)
+  is `prisma.projectMember.findMany({ where: { userId } })` with the project
+  included, so a project the caller doesn't belong to is never fetched from
+  the database in the first place, let alone filtered out in application
+  code afterward.
