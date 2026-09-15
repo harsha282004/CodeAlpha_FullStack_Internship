@@ -5,7 +5,13 @@ const router = Router()
 
 router.use('/health', healthRoutes)
 
-// auth, projects, boards, tasks, comments, and notifications routes are
-// added in later phases.
+// Mounted here in later phases, in this order:
+//   router.use('/auth', authRoutes)
+//   router.use('/users', userRoutes)
+//   router.use('/projects', projectRoutes)
+//   router.use('/boards', boardRoutes)
+//   router.use('/tasks', taskRoutes)
+//   router.use('/comments', commentRoutes)
+//   router.use('/notifications', notificationRoutes)
 
 export default router

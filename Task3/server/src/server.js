@@ -15,7 +15,14 @@ server.on('error', (error) => {
 // the Prisma connection pool before exiting — avoids dropping requests or
 // leaving open database connections when the process is stopped (Ctrl+C,
 // `docker stop`, a process manager restart, etc.).
+let isShuttingDown = false
+
 async function shutdown(signal) {
+  // A second SIGINT/SIGTERM (e.g. an impatient double Ctrl+C) would otherwise
+  // call server.close()/prisma.$disconnect() again mid-shutdown.
+  if (isShuttingDown) return
+  isShuttingDown = true
+
   console.log(`${signal} received — shutting down gracefully`)
 
   server.close(async (err) => {

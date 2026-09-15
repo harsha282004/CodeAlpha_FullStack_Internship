@@ -336,16 +336,45 @@ Each resource group gets its own `routes/*.routes.js`, mounted from a single
 
 ## 18. Error-handling strategy
 
-- Services throw plain `Error` objects with a `.status` property for
-  expected failures (not found, conflict, forbidden); unexpected errors
-  bubble up as plain 500s.
-- Controllers never `try/catch` business errors themselves beyond passing
-  them to `next(error)` — a single centralized `errorHandler` middleware
-  formats every error response as `{ success: false, message }`, logging
-  full detail server-side only for 500s (never leaking internals to the
-  client).
-- A `notFoundHandler` catches any unmatched route under `/api` and returns a
-  consistent 404 JSON body.
+**Implemented in Phase 3.** A small `AppError` class
+(`server/src/utils/AppError.js` — `message`, `statusCode`, `code`) is how
+services/controllers signal a deliberate, expected failure (a dependency
+that's down, a not-found record, a conflict). It is deliberately not a
+framework: one class, no subclass hierarchy.
+
+The centralized `errorHandler` middleware (`server/src/middleware/errorHandler.js`)
+resolves any thrown value in this order:
+
+1. `AppError` — trusted as-is (its whole point is a safe, chosen message).
+2. Malformed JSON (`express.json()`'s `entity.parse.failed`) → 400.
+3. Oversized body (`entity.too.large`) → 413.
+4. Known Prisma errors — `PrismaClientKnownRequestError` `P2002` (unique
+   conflict) → 409, `P2025` (record missing) → 404, anything else known →
+   400; `PrismaClientValidationError` → 400.
+5. A plain `Error` with an explicit non-500 `.status`/`.statusCode` (e.g. the
+   health service's 503) — trusted, since deliberate application code set
+   it. An explicit 500 is **not** trusted this way, only `AppError` may
+   speak for a 500 — an ordinary bug can also happen to have
+   `.statusCode === 500` sitting on it, and that must not leak its message.
+6. Anything else → generic 500, `"Something went wrong"`. Full error detail
+   (including stack) is logged server-side via `console.error` for every
+   5xx, in every environment — but the response body never contains a
+   stack trace, regardless of `NODE_ENV`.
+
+Every error response has the same shape: `{ success: false, message, code? }`.
+Every success response is `{ success: true, message }` (health endpoints) or
+`{ success: true, data }` (future resource endpoints) — established now so
+later controllers have one convention to follow.
+
+Controllers never `try/catch` business errors themselves beyond passing them
+to `next(error)` — and as of Express 5 (used here), an `async` route handler
+that throws or rejects is forwarded to `next(error)` automatically, so no
+`asyncHandler` wrapper is needed (verified directly against the installed
+Express version; see Phase 3 verification notes in the project history).
+
+A `notFoundHandler` catches any unmatched route under `/api` and returns
+`{ success: false, message: "Route not found", code: "NOT_FOUND" }` — JSON,
+never an HTML error page.
 
 ## 19. Validation strategy
 
@@ -359,36 +388,71 @@ Each resource group gets its own `routes/*.routes.js`, mounted from a single
 
 ## 20. Security strategy
 
-- Passwords hashed with bcryptjs; `passwordHash` is never serialized into
-  an API response.
-- JWTs signed with a server-only secret (`JWT_SECRET`), never stored in
-  `localStorage` in a way that's exposed to arbitrary third-party scripts
-  more than necessary — transport and storage details are finalized in the
-  auth implementation phase.
-- CORS restricted to `CLIENT_URL` (never `*`), so only the known frontend
-  origin can call the API with credentials.
+**Implemented in Phase 3:**
+
+- `helmet()` sets the standard set of safe HTTP headers (`X-Content-Type-Options`,
+  hides `X-Powered-By`, etc.). Its default cross-origin-resource-policy
+  (`same-origin`) is deliberately relaxed to `cross-origin` — this API is
+  designed to be called from a different origin/port (the Vite frontend),
+  and the default would otherwise cause browsers to block the frontend's own
+  legitimate `fetch()` calls even though CORS allows them. This is the one
+  documented deviation from helmet's defaults, and it only affects who may
+  *read a response*, not who may write one — it does not weaken CORS itself.
+- CORS restricted to the exact string in `CLIENT_URL` (never `*`, never an
+  origin-reflecting function) — a mismatched `Origin` still gets a response,
+  but with an `Access-Control-Allow-Origin` that doesn't match its own
+  origin, which is what makes browsers refuse to expose it to that page's
+  JavaScript. `credentials` is intentionally left off, since nothing sends
+  cookies yet — enabling it "just in case" would only widen what a
+  misconfigured origin could do, for no current benefit.
+- `express.json()` body size capped at 100kb — comfortably larger than any
+  request this phase's endpoints take, small enough to make a trivial
+  payload-flood pointless.
+- Environment validation fails startup immediately in production if
+  `DATABASE_URL`, `JWT_SECRET`, or `CLIENT_URL` is missing, rather than
+  failing confusingly later on first use.
+- Nothing is ever logged that could leak a secret: the dev-only request
+  logger records method/path/status/duration only (never headers or body),
+  and error logging never includes `DATABASE_URL`, `JWT_SECRET`, or request
+  bodies.
 - Postgres bound to `127.0.0.1` only in Docker Compose — never exposed on
   the network.
-- `express.json()` body size is capped to prevent trivial payload-based
-  abuse.
 - `.env` files are git-ignored; only `.env.example` (placeholders) is
   committed.
+
+**Planned for later phases:**
+
+- Passwords hashed with bcryptjs; `passwordHash` never serialized into an
+  API response.
+- JWTs signed with `JWT_SECRET` (already validated/required in production as
+  of this phase, so Phase 4 has no configuration left to add).
 - Authorization checks (project role, resource ownership) happen in the
-  service layer, not just the UI, so the API is safe even if the frontend
-  is bypassed.
+  service layer, not just the UI, so the API is safe even if the frontend is
+  bypassed.
 
 ## 21. Testing strategy
 
 - **API verification:** manual `curl`/HTTP checks against `/api/health` and
-  `/api/health/db` in this phase; automated request-level tests are added
-  once real endpoints exist.
+  `/api/health/db`, plus the full Phase 3 foundation matrix — malformed
+  JSON (400), oversized body (413), unknown route (404), allowed vs.
+  arbitrary CORS origin, and a real database-down scenario (503, verified by
+  stopping the Postgres container) — all confirmed against the running
+  server. Automated request-level tests are added once real resource
+  endpoints exist.
 - **Database verification:** `prisma migrate`, `prisma db seed`, and direct
   queries (via `prisma studio` or ad hoc scripts) confirm schema integrity
   and seed idempotency.
 - **Build verification:** `npm run build` for both workspaces must succeed
-  with zero TypeScript/bundler errors.
+  with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
+  independently.
 - Automated test suites (integration tests per resource) are planned for
   later phases once there are real endpoints worth testing.
+- **Known limitation:** graceful shutdown was verified by code review (a
+  guarded, standard `SIGINT`/`SIGTERM` handler — see Section 12/18), not by
+  an interactive `Ctrl+C`. Delivering a real POSIX signal to a background
+  Node process from this development environment isn't reliable enough to
+  demonstrate one way or the other, so this is reported as a limitation
+  rather than a false "tested" claim.
 
 ## 22. Development phases
 
@@ -396,7 +460,11 @@ Each resource group gets its own `routes/*.routes.js`, mounted from a single
 - **Phase 1** — project scaffolding: monorepo, client foundation, server
   foundation, health endpoints, Docker Postgres.
 - **Phase 2** — database layer: full Prisma schema, migrations, seed data.
-- **Phase 3+ (not started)** — authentication, projects/members API,
+- **Phase 3** — backend foundation: `AppError` + centralized error handling
+  (malformed JSON, oversized body, Prisma errors), `helmet`, dev request
+  logging, guarded graceful shutdown, consistent response envelope. No new
+  resource routes — `/api` still only exposes `health` and `health/db`.
+- **Phase 4+ (not started)** — authentication, projects/members API,
   boards/tasks API, comments API, notifications API, full frontend
   (dashboard, Kanban board, task detail view), Socket.IO real-time layer.
 
@@ -447,3 +515,23 @@ Example: a user moves a task to a different board.
 - **Socket.IO is additive only** — the real-time layer is deliberately
   deferred past Phase 2 and, when built, will never be the system of
   record; PostgreSQL always is.
+- **`AppError` is trusted at 500, a bare `Error` with `.status`/`.statusCode`
+  is not** — the error handler needs some way to tell "a service
+  deliberately signaled this failure with a safe message" apart from "an
+  unrelated bug happens to have a `.statusCode` property sitting on it."
+  Requiring the explicit `AppError` type for that trust boundary at 500
+  keeps an accidental property from ever leaking an internal error message,
+  while still letting deliberate non-500 signals (like the health service's
+  503) pass through without needing to be rewritten as `AppError`.
+- **Helmet's cross-origin-resource-policy is relaxed to `cross-origin`,
+  not left at its `same-origin` default** — this project's frontend and API
+  intentionally run on different origins (separate Vite/Express ports),
+  so the default would silently break every frontend `fetch()` call despite
+  CORS explicitly allowing them. This is the one place Phase 3 deviates from
+  a security library's default, and it's deviated from with an explicit,
+  documented reason rather than by disabling helmet altogether.
+- **No `asyncHandler` wrapper** — Express 5 (in use here) already forwards a
+  rejected promise from an `async` route handler to `next(error)`
+  automatically; adding a wrapper on top would just be the same behavior
+  twice. Confirmed directly against the installed Express version rather
+  than assumed from framework version numbers alone.
