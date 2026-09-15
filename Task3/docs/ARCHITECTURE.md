@@ -287,9 +287,11 @@ would only create a place for them to disagree.
 ## 12. Board/task relationship
 
 **Board CRUD implemented in Phase 7** (`GET/POST/PATCH/DELETE`
-under `/api/projects/:projectId/boards` — see
-[BOARDS.md](./BOARDS.md) for the full detail); tasks themselves are
-Phase 8.
+under `/api/projects/:projectId/boards` — see [BOARDS.md](./BOARDS.md)).
+**Task CRUD implemented in Phase 8** (`GET/POST/PATCH/DELETE` under
+`/api/projects/:projectId/boards/:boardId/tasks` — see
+[TASKS.md](./TASKS.md)). Task assignment, comments, notifications, and
+Socket.IO remain Phases 9–12.
 
 - A `Project` has many `Board`s (e.g. "To Do", "In Progress", "Review",
   "Done" — names are per-project data, not hardcoded enum values, so
@@ -299,23 +301,34 @@ Phase 8.
   is intentional denormalization for query simplicity and safe indexing.
 - `position` (integer) on both `Board` and `Task` gives deterministic,
   drag-and-drop-friendly ordering without reordering every row on every
-  move (later phase can use fractional/gap-based positions if needed). As
-  of Phase 7, board creation auto-assigns the next position when one isn't
-  supplied (`(current max position in the project) + 1`, or `0` for the
-  first board) — no drag-and-drop renumbering algorithm yet, just enough
-  ordering to be deterministic and to not require the frontend to compute
-  a position.
-- **No board ID is ever reachable through the wrong project's URL.**
-  Every board read/write in Phase 7 checks both that the board exists
-  *and* that `board.projectId` matches the `:projectId` in the request —
-  a board from a different project produces the identical `404` a
-  genuinely nonexistent board would, never a `403` or any other
+  move (later phase can use fractional/gap-based positions if needed). Both
+  board creation (Phase 7) and task creation (Phase 8) auto-assign the next
+  position when one isn't supplied (`MAX(position) + 1` scoped to the
+  parent — project for boards, board for tasks — or `0` for the first row)
+  — no drag-and-drop renumbering algorithm yet, just enough ordering to be
+  deterministic and to not require the frontend to compute a position.
+- **No board ID is ever reachable through the wrong project's URL, and no
+  task ID is ever reachable through the wrong board's (or project's)
+  URL.** Every board read/write checks both that the board exists *and*
+  that `board.projectId` matches the request's `:projectId`; every task
+  read/write checks both that the task exists *and* that `task.boardId`
+  matches the request's `:boardId` (which `requireBoardInProject` has
+  already confirmed belongs to the request's `:projectId`). In both cases
+  a resource from the wrong parent produces the identical `404` a
+  genuinely nonexistent one would, never a `403` or any other
   distinguishing detail.
 - **Deleting a board cascades to its tasks** (`Task.board` is
   `onDelete: Cascade` — see [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md)).
-  Phase 8 hasn't introduced task creation yet, so no `Task` row can
-  currently reference any board; this is documented now so the cascade
-  isn't a surprise once task creation exists.
+  As of Phase 8, tasks can exist, so this cascade is no longer inert — it
+  was verified directly in this phase (deleting a board with tasks under
+  it leaves zero orphaned `tasks` rows).
+- **The `Task` model has no `status` field or enum.** A task's workflow
+  stage is represented by which `Board` it's on — the same free-text,
+  per-project boards described above. Phase 8's validator explicitly
+  recognizes a `status` field in a request body and rejects it with a
+  message pointing at board placement instead of a generic "unsupported
+  field" — see [Important design decisions](#24-important-design-decisions)
+  for the full reasoning.
 
 ```mermaid
 flowchart LR
@@ -330,7 +343,11 @@ flowchart LR
     T1 -->|has many| C1[Comment]
 ```
 
-## 13. Task assignment model
+## 13. Task assignment model (planned — Phase 9)
+
+The task card itself (title, description, priority, position, due date) is
+implemented as of Phase 8 — see [TASKS.md](./TASKS.md). *Assigning* a task
+to one or more members is this section's subject and remains Phase 9.
 
 - `TaskAssignee` is a join table between `Task` and `User`, with a composite
   primary key `(taskId, userId)` — a task can have zero or more assignees,
@@ -413,8 +430,9 @@ breaking change is needed). Current + planned resource layout:
 /api/projects/:id/boards          GET, POST (any member)     — implemented (Phase 7)
 /api/projects/:id/boards/:boardId GET (any member),          — implemented (Phase 7)
                                    PATCH/DELETE (OWNER/ADMIN)
-/api/projects/:id/tasks            GET, POST
-/api/tasks/:id                     GET, PATCH, DELETE
+/api/projects/:id/boards/:boardId/tasks           GET, POST (any member)          — implemented (Phase 8)
+/api/projects/:id/boards/:boardId/tasks/:taskId   GET, PATCH (any member),        — implemented (Phase 8)
+                                                   DELETE (OWNER/ADMIN)
 /api/tasks/:id/assignees           POST, DELETE
 /api/tasks/:id/comments             GET, POST
 /api/comments/:id                   PATCH, DELETE
@@ -443,6 +461,16 @@ keeping boards fully nested under their project (`/api/projects/:id/boards/:boar
 made the cross-project isolation check (Section 12) a natural, unavoidable
 part of every lookup, rather than a separate rule to remember for a
 route that could otherwise be reached without ever mentioning its project.
+
+Tasks (Phase 8) follow the identical pattern one level deeper: their own
+`task.routes.js`, `Router({ mergeParams: true })`, mounted from
+`board.routes.js` at `router.use('/:boardId/tasks', requireBoardInProject(), taskRoutes)`.
+`requireBoardInProject` (`server/src/middleware/boardAuth.middleware.js`)
+is new, but it doesn't duplicate board.service.js's own hierarchy check —
+it calls that function's exported `getBoardWithinProject` directly, so
+there is exactly one implementation of "does this board belong to this
+project," reused by both board.controller.js's direct board operations and
+every nested task route's baseline gate.
 
 `/api/auth/me` and `/api/users/me` are deliberately separate, not
 duplicates: the former is read-only "who am I" identity data returned as
@@ -635,9 +663,32 @@ never an HTML error page.
   leave zero orphaned `boards` rows; full regression of Phase 3, 4, 5, and
   6. See [BOARDS.md](./BOARDS.md) for the complete scenario list and
   results.
+- **Phase 8 task verification:** unauthenticated requests rejected on all
+  five endpoints; OWNER/ADMIN/MEMBER can all create/list/view/update,
+  non-member `403` on all four, nonexistent project/board both `404`;
+  valid create (auto-`position` across two sequential creates), missing/
+  empty title, invalid `priority`, invalid `position`, a `status` field
+  (the explanatory message, not a generic rejection), and an unsupported
+  field (`boardId`) — each `400` except the valid case; list scoped to the
+  requested board only, ordered by `position`/`createdAt`/`id`, paginated;
+  **the critical isolation check, exercised twice** — a task under Board
+  A1 requested, updated, or deleted through Board A2's URL (same project)
+  and through an entirely different project's board both return the
+  identical `404 TASK_NOT_FOUND`, from callers who are legitimate members
+  of the project/board actually being queried; any member can update
+  content/priority/position/`dueDate`, non-member `403`, every invalid
+  update field `400`, unsupported field (`createdById`) `400`; MEMBER
+  `403` and non-member `403` on delete, OWNER and ADMIN both succeed,
+  confirmed gone from a follow-up list, deleting an already-gone task
+  `404`; direct SQL after all of the above confirmed zero orphaned `tasks`
+  rows, zero rows where `task.project_id` disagreed with its board's
+  `project_id`, zero negative positions; full regression of Phase 3, 4, 5,
+  6, and 7. See [TASKS.md](./TASKS.md) for the complete scenario list,
+  results, and the reasoning behind treating board placement (not a
+  `status` field) as a task's workflow stage.
 - **Database verification:** `prisma migrate`, `prisma db seed`, and direct
   queries (via `prisma studio` or ad hoc scripts) confirm schema integrity
-  and seed idempotency. Phases 4 through 7 required no schema change — the
+  and seed idempotency. Phases 4 through 8 required no schema change — the
   Phase 2 schema already had everything each needed.
 - **Build verification:** `npm run build` for both workspaces must succeed
   with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
@@ -691,7 +742,24 @@ never an HTML error page.
   model already had everything this needed. No task cards (that's what
   boards will eventually contain, in Phase 8), no reordering algorithm
   beyond automatic next-position assignment, no frontend UI.
-- **Phase 8+ (not started)** — task cards API, comments API,
+- **Phase 8** — task cards: task CRUD
+  (`GET/POST/PATCH/DELETE /api/projects/:projectId/boards/:boardId/tasks[/:taskId]`),
+  reusing Phase 6/7's authorization middleware unchanged, plus a new
+  `requireBoardInProject` that verifies the board-within-project half of
+  the hierarchy for every nested task route (calling board.service.js's
+  existing check rather than duplicating it). Automatic `position`
+  assignment on create, scoped per board; strict
+  task-belongs-to-this-board enforcement on every read and write (a task
+  from elsewhere is a `404`, identical to a nonexistent one — verified
+  against both a sibling board in the same project and an entirely
+  different project). No schema change — the Phase 2 `Task` model already
+  had everything this needed. **No `status` field added** — a task's
+  workflow stage is its board, consistent with this project's board design
+  since Phase 0; see Section 12 and
+  [Important design decisions](#24-important-design-decisions). No task
+  assignment, comments, notifications, Socket.IO, or frontend UI — those
+  remain later phases.
+- **Phase 9+ (not started)** — task assignment API, comments API,
   notifications API, full frontend (dashboard, Kanban board, task detail
   view, login/register/project/board UI), Socket.IO real-time layer.
 
@@ -870,3 +938,40 @@ Example: a user moves a task to a different board.
   sync the moment anything touches the table outside the API, e.g. the
   seed script); computing it fresh from the current rows is one query and
   cannot drift.
+- **No `TaskStatus` enum was added, even though the Phase 8 brief's example
+  payload included a `status` field.** The schema — and every prior
+  document, including this one's own Section 12 and Section 23 "Data flow"
+  example — has treated *which board a task is on* as its workflow stage
+  since Phase 0. Board names are deliberately free-text per-project data
+  (a team can have a "Blocked" column, or "This Sprint"/"Backlog"/"Shipped"
+  instead of "To Do"/"In Progress"/"Done"), precisely so a project can
+  define its own workflow rather than being locked into a fixed set of
+  stages. A parallel fixed `TaskStatus` enum (`TODO`/`IN_PROGRESS`/`DONE`)
+  would sit awkwardly next to that: a task could then be on a custom board
+  called "Blocked" while its separate `status` field says `DONE`, and
+  nothing in the schema would say which one is true. Rather than
+  introduce that ambiguity, Phase 8 keeps one source of truth (the board)
+  and has its validator recognize `status` by name, explaining *why* it
+  isn't a field instead of just rejecting it as unknown. If a genuine need
+  for a status independent of board placement emerges later (e.g. a
+  "blocked" flag that's orthogonal to which column a task visually sits
+  in), that's a real, minimal, well-motivated schema addition for that
+  later phase to make explicitly — not a foregone conclusion baked in here
+  by default.
+- **`requireBoardInProject` reuses `board.service.js`'s
+  `getBoardWithinProject` rather than re-querying** — the same reasoning
+  as `requireProjectMember` reusing nothing but the database for identity:
+  there is exactly one implementation of "does this board belong to this
+  project," used identically whether the caller is `board.controller.js`'s
+  own detail/update/delete handlers or the middleware gating every task
+  route nested underneath. Two implementations of the same check are two
+  places for a future edit to update inconsistently.
+- **Task hierarchy verification stops at `task.boardId`, without a second
+  check against `task.projectId`** — by the time a task lookup runs,
+  `requireBoardInProject` has already confirmed the URL's `:boardId`
+  belongs to the URL's `:projectId`. Since a task's `boardId` is immutable
+  in Phase 8 (no endpoint changes which board a task is on), confirming
+  `task.boardId` matches the already-verified board is sufficient to
+  transitively guarantee the whole project → board → task chain — a
+  redundant `task.projectId` comparison would check a fact already
+  established, not add a new guarantee.

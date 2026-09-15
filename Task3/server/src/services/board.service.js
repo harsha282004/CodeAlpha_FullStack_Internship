@@ -22,8 +22,10 @@ function boardNotFoundError() {
 // board can never be reached (or modified) through the wrong project's
 // URL. Checked here, once, and used by every read/write below rather than
 // only the detail route, so PATCH/DELETE can't be used to reach across
-// projects either.
-async function getBoardWithinProject(projectId, boardId) {
+// projects either. Exported so requireBoardInProject (Phase 8's
+// board-auth middleware, gating every nested task route) can reuse this
+// exact check instead of duplicating the same query.
+export async function getBoardWithinProject(projectId, boardId) {
   if (!UUID_REGEX.test(boardId)) {
     // A malformed id can never match a real board — treated as "not
     // found" rather than a validation error, consistent with how

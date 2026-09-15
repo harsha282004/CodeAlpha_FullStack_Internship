@@ -7,7 +7,7 @@ assignments, and comments — built with React, Express, and PostgreSQL.
 
 ## Status
 
-**Current phase: Phase 7 complete (project boards).** Architecture is
+**Current phase: Phase 8 complete (task cards).** Architecture is
 documented, the monorepo scaffolding (client + server) runs, the full Prisma
 schema + seed data are in place, the Express API has its production-ready
 foundation (centralized error handling, restricted CORS, security headers,
@@ -15,18 +15,19 @@ request-size limits, graceful shutdown), real registration/login/JWT
 authentication runs against PostgreSQL, authenticated users can view/edit
 their profile and look up or search for other users, users can create
 projects and manage OWNER/ADMIN/MEMBER membership with every write
-authorized against the caller's actual role in PostgreSQL, and each project
-can now organize its work into ordered boards (e.g. "To Do" / "In Progress"
-/ "Done") — the columns task cards will live in once Phase 8 adds tasks.
+authorized against the caller's actual role in PostgreSQL, each project
+organizes its work into ordered boards, and each board can now hold task
+cards — title, description, priority, due date, and position, ordered and
+filtered strictly within their board.
 
-No other application features are implemented yet: task cards themselves,
-comments, notifications, and the real dashboard/Kanban UI are all planned
-for later phases — boards exist as an API/database concept only, with
-nothing inside them yet. The homepage still only confirms the frontend can
-reach the API and the database — there is no login/register/profile/
-project/board UI yet, since the frontend for any of this is a later phase.
-`/api` currently exposes `health`, `auth`, `users`, and `projects`
-(including nested boards) only.
+No other application features are implemented yet: task assignment (Phase
+9), task comments (Phase 10), notifications (Phase 11), Socket.IO/real-time
+(Phase 12), and the real dashboard/Kanban UI are all planned for later
+phases. The homepage still only confirms the frontend can reach the API and
+the database — there is no login/register/profile/project/board/task UI
+yet, since the frontend for any of this is a later phase. `/api` currently
+exposes `health`, `auth`, `users`, and `projects` (including nested boards
+and, within those, nested tasks) only.
 
 ## Stack
 
@@ -165,17 +166,20 @@ error — is JSON with a `success` boolean:
 | `GET` | `/api/health/db` | 200 if Prisma can reach PostgreSQL (`SELECT 1`); 503 if not |
 | any | anything else under `/api` | 404 JSON (`code: "NOT_FOUND"`), never an HTML error page |
 
-Everything else (`/api/tasks`, `/api/comments`, `/api/notifications`) is
-deliberately not mounted yet — those are later phases. `/api/auth`,
-`/api/users`, `/api/projects`, and the nested `/api/projects/:id/boards`
-are now live — see [Authentication (Phase 4)](#authentication-phase-4),
+Everything else (`/api/comments`, `/api/notifications`) is deliberately not
+mounted yet — those are later phases. `/api/auth`, `/api/users`,
+`/api/projects`, the nested `/api/projects/:id/boards`, and the
+further-nested `/api/projects/:id/boards/:boardId/tasks` are all now live —
+see [Authentication (Phase 4)](#authentication-phase-4),
 [User profiles (Phase 5)](#user-profiles-phase-5),
-[Projects & membership (Phase 6)](#projects--membership-phase-6), and
-[Project boards (Phase 7)](#project-boards-phase-7) below, plus
+[Projects & membership (Phase 6)](#projects--membership-phase-6),
+[Project boards (Phase 7)](#project-boards-phase-7), and
+[Task cards (Phase 8)](#task-cards-phase-8) below, plus
 [docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md),
 [docs/USER_PROFILES.md](./docs/USER_PROFILES.md),
-[docs/PROJECTS.md](./docs/PROJECTS.md), and
-[docs/BOARDS.md](./docs/BOARDS.md) for the full detail.
+[docs/PROJECTS.md](./docs/PROJECTS.md),
+[docs/BOARDS.md](./docs/BOARDS.md), and
+[docs/TASKS.md](./docs/TASKS.md) for the full detail.
 
 **Middleware order:** `helmet` → CORS → request logger (dev only) →
 `express.json` (100kb limit) → `/api` router → 404 handler → centralized
@@ -391,18 +395,59 @@ reordering is a later refinement.
 rename, reorder, or delete one** — the same `requireProjectRole`
 middleware from Phase 6, reused rather than reimplemented.
 
+## Task cards (Phase 8)
+
+Boards can now hold task cards — the actual units of work. Full detail
+lives in [docs/TASKS.md](./docs/TASKS.md); this is the short version.
+
+**Routes** (all under `/api/projects/:projectId/boards/:boardId/tasks`,
+all require `Authorization: Bearer <token>` and project membership, and
+verify the *entire* project → board → task hierarchy on every request):
+
+| Method | Path | Minimum role | Behavior |
+|---|---|---|---|
+| `POST` | `/` | any member | Creates a task; `position` auto-assigned if omitted |
+| `GET` | `/?page=&limit=` | any member | Lists this board's tasks, ordered and paginated |
+| `GET` | `/:taskId` | any member | Task detail |
+| `PATCH` | `/:taskId` | any member | Updates `title`/`description`/`priority`/`position`/`dueDate` |
+| `DELETE` | `/:taskId` | OWNER or ADMIN | Deletes the task |
+
+**No schema change** — the Phase 2 `Task` model already had every field
+this phase needed. **One deliberate design decision worth calling out:**
+the schema has no `status` field or enum — a task's workflow stage is
+represented by *which board it's on* (this project's boards are its
+"To Do"/"In Progress"/"Done", and they're free-text per-project data, not a
+fixed enum). Submitting `status` in a request body gets a `400` explaining
+this, rather than a generic "unsupported field."
+
+**Priority** uses the existing `TaskPriority` enum unchanged: `LOW`,
+`MEDIUM`, `HIGH`, `URGENT` (default `MEDIUM`).
+
+**A task is only ever reachable through its true project *and* board.**
+Every task read/write checks the full hierarchy — a task from Board A
+requested through Board B's URL (even within the same project), or through
+an entirely different project, returns the identical `404 TASK_NOT_FOUND`
+a nonexistent task would. Verified directly during testing with two boards
+in one project and a second, independently owned project.
+
+**Any project member can create, view, and update a task's content/
+priority/position/due date — deletion is OWNER/ADMIN only.** Task
+*assignment* (who a task is for) is Phase 9 and isn't implemented yet;
+Phase 8 only establishes the card itself.
+
 ## Current phase
 
 Phase 0 (architecture/planning), Phase 1 (scaffolding), Phase 2 (database
 layer), Phase 3 (backend foundation), Phase 4 (authentication), Phase 5
-(user profiles), Phase 6 (projects & membership), and Phase 7 (project
-boards) are complete. Task cards, comments, notifications, Socket.IO
-real-time updates, and the full frontend UI (including a login/register/
-profile/project/board experience) are planned for subsequent phases.
+(user profiles), Phase 6 (projects & membership), Phase 7 (project
+boards), and Phase 8 (task cards) are complete. Task assignment (Phase 9),
+task comments (Phase 10), notifications (Phase 11), Socket.IO real-time
+updates (Phase 12), and the full frontend UI are planned for subsequent
+phases.
 
 ## Planned features
 
-- Task cards within boards, with assignment, priorities, and due dates
+- Task assignment (who a task is for)
 - Comments on tasks
 - Project activity timeline
 - Notifications
