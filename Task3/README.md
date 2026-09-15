@@ -7,18 +7,19 @@ assignments, and comments — built with React, Express, and PostgreSQL.
 
 ## Status
 
-**Current phase: Phase 3 complete (backend foundation).** Architecture is
+**Current phase: Phase 4 complete (authentication).** Architecture is
 documented, the monorepo scaffolding (client + server) runs, the full Prisma
-schema + seed data are in place, and the Express API now has its complete
-production-ready foundation: centralized error handling, a consistent JSON
-response shape, restricted CORS, security headers, request-size limits,
-development logging, and graceful shutdown.
+schema + seed data are in place, the Express API has its production-ready
+foundation (centralized error handling, restricted CORS, security headers,
+request-size limits, graceful shutdown), and real registration/login/JWT
+authentication now runs against PostgreSQL.
 
-No application features are implemented yet: authentication, projects,
-boards, tasks, comments, notifications, and the real dashboard/Kanban UI are
-all planned for later phases. The homepage currently only confirms the
-frontend can reach the API and the database. `/api` only exposes the two
-health endpoints described below.
+No other application features are implemented yet: projects, boards, tasks,
+comments, notifications, and the real dashboard/Kanban UI are all planned
+for later phases. The homepage still only confirms the frontend can reach
+the API and the database — there is no login/register UI yet, since
+frontend authentication is a later phase. `/api` currently exposes `health`
+and `auth` only.
 
 ## Stack
 
@@ -86,8 +87,8 @@ cp .env.example server/.env
 | `NODE_ENV` | server | `development` (default) or `production` — gates request logging and required-variable validation |
 | `PORT` | server | Port the Express API listens on (default `5002`) |
 | `DATABASE_URL` | server | Postgres connection string (must match `docker-compose.yml`) |
-| `JWT_SECRET` | server | Signing secret for JWTs (auth is implemented in a later phase; required in production already, so Phase 4 has nothing left to configure) |
-| `JWT_EXPIRES_IN` | server | JWT expiry (default `1d`) |
+| `JWT_SECRET` | server | Signing secret for issued JWTs — required in production; falls back to failing cleanly (500) on first auth request if unset in development |
+| `JWT_EXPIRES_IN` | server | How long an issued JWT stays valid (default `1d`) |
 | `CLIENT_URL` | server | The only origin the API's CORS policy allows |
 | `VITE_API_URL` | client | Base URL the frontend calls (`http://localhost:5002/api`) |
 
@@ -157,9 +158,11 @@ error — is JSON with a `success` boolean:
 | `GET` | `/api/health/db` | 200 if Prisma can reach PostgreSQL (`SELECT 1`); 503 if not |
 | any | anything else under `/api` | 404 JSON (`code: "NOT_FOUND"`), never an HTML error page |
 
-Everything else (`/api/auth`, `/api/users`, `/api/projects`, `/api/boards`,
-`/api/tasks`, `/api/comments`, `/api/notifications`) is deliberately not
-mounted yet — those are later phases.
+Everything else (`/api/users`, `/api/projects`, `/api/boards`, `/api/tasks`,
+`/api/comments`, `/api/notifications`) is deliberately not mounted yet —
+those are later phases. `/api/auth` is now live — see
+[Authentication (Phase 4)](#authentication-phase-4) below and
+[docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md) for the full detail.
 
 **Middleware order:** `helmet` → CORS → request logger (dev only) →
 `express.json` (100kb limit) → `/api` router → 404 handler → centralized
@@ -175,9 +178,10 @@ everything else is treated as an unexpected bug: logged in full server-side,
 but the client only ever gets a generic `"Something went wrong"` (no stack
 trace, no internals, in any environment).
 
-**CORS:** restricted to the single origin in `CLIENT_URL` — never `*`. No
-cookies are sent yet, so credentialed CORS is intentionally left off; that
-gets revisited if/when Phase 4 auth needs it. `helmet`'s default
+**CORS:** restricted to the single origin in `CLIENT_URL` — never `*`. Phase
+4 authentication uses a bearer JWT in the `Authorization` header rather than
+cookies, so no request ever needs credentials — credentialed CORS stays off.
+`helmet`'s default
 cross-origin resource policy is relaxed to `cross-origin`, since the
 frontend and API are expected to run on different ports/origins in this
 project by design (Vite dev server vs. Express) — without that adjustment,
@@ -188,18 +192,66 @@ allowing them.
 requests finish, disconnect Prisma, then exit — guarded so a second signal
 mid-shutdown can't run the sequence twice.
 
+## Authentication (Phase 4)
+
+Real registration, login, and JWT-based authentication against PostgreSQL —
+no mock users, no frontend-only auth. Full detail (flows, security
+reasoning, request/response examples) lives in
+[docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md); this is the short
+version.
+
+**Routes:**
+
+| Method | Path | Auth required | Behavior |
+|---|---|---|---|
+| `POST` | `/api/auth/register` | no | Creates a user, returns the safe user + a JWT. `201`, or `409` if the email/username is already taken |
+| `POST` | `/api/auth/login` | no | Verifies email/password, returns the safe user + a JWT. `200`, or `401` for any invalid credential |
+| `GET` | `/api/auth/me` | **yes** | Returns the authenticated user. `200`, or `401` if the token is missing/invalid/expired |
+
+**Authorization header:** `Authorization: Bearer <token>` — anything else
+(missing, wrong scheme, empty, malformed, expired, tampered, wrong
+signature) gets the same generic `401 {"success":false,"message":"Authentication required","code":"AUTHENTICATION_REQUIRED"}`,
+so a caller can't use the response to fingerprint *why* it failed.
+
+**Passwords:** hashed with bcrypt (cost 12) via `bcryptjs`; `passwordHash` is
+never selected out of the database for anything except the login check
+itself, and is never present in any API response.
+
+**Validation (`POST /api/auth/register`):** `name` (required, ≤100 chars),
+`username` (required, `^[a-z0-9_]{3,30}$`, checked before any
+case-normalization so mixed-case input like `UserName` is rejected rather
+than silently lowercased), `email` (required, normalized to lowercase,
+basic format check, ≤254 chars), `password` (required, 8–72 characters —
+72 is bcrypt's own input limit, enforced here so an over-length password is
+rejected with `400` instead of silently truncated).
+
+**JWT payload:** `{ sub: "<user id>" }` plus the standard `iat`/`exp` —
+nothing else. Verified with the decoded output during testing; see
+[docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md#jwt-design).
+
+**Login errors are intentionally generic:** a nonexistent email and a wrong
+password both return the exact same `401 "Invalid email or password"` —
+distinguishing them would let a caller enumerate which emails are
+registered. A login attempt against a nonexistent email still runs a real
+bcrypt comparison (against a fixed dummy hash) so its response time doesn't
+give that away either.
+
+No frontend login/register UI exists yet — that's a later phase. The
+backend works completely independently through the API, verified with
+`curl` throughout development.
+
 ## Current phase
 
 Phase 0 (architecture/planning), Phase 1 (scaffolding), Phase 2 (database
-layer), and Phase 3 (backend foundation) are complete. Authentication, the
-projects/boards/tasks REST API, comments, notifications, Socket.IO
-real-time updates, and the full frontend UI are planned for subsequent
+layer), Phase 3 (backend foundation), and Phase 4 (authentication) are
+complete. User profile editing, the projects/boards/tasks REST API,
+comments, notifications, Socket.IO real-time updates, and the full frontend
+UI (including a login/register experience) are planned for subsequent
 phases.
 
 ## Planned features
 
-- Register/login, profile management
-- Create projects, invite members, assign roles
+- Profile management, project creation, invite members, assign roles
 - Boards and drag-and-drop task cards
 - Task assignment, priorities, due dates, task detail view
 - Comments on tasks

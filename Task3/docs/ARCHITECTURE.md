@@ -147,16 +147,39 @@ erDiagram
     TASK ||--o{ NOTIFICATION : "relates to"
 ```
 
-## 9. Authentication architecture (planned — later phase)
+## 9. Authentication architecture
 
-- Register: bcrypt-hash the password (`bcryptjs`, cost factor 10), create a
-  `User` row, return a signed JWT.
-- Login: verify credentials, return a signed JWT.
-- JWT payload: `{ sub: userId }`, short-lived expiry (configurable via
-  `JWT_EXPIRES_IN`), signed with `JWT_SECRET`.
-- Token transport: `Authorization: Bearer <token>` header.
-- `passwordHash` is never selected into API responses; Prisma queries that
-  return a `User` will explicitly `select` safe fields only.
+**Implemented in Phase 4.** Full detail — including the exact validation
+rules, the login-timing consideration, and per-scenario security notes —
+lives in [AUTHENTICATION.md](./AUTHENTICATION.md); this section stays at
+the architectural level.
+
+- Register: validate input (`server/src/validators/auth.validator.js`),
+  bcrypt-hash the password (`bcryptjs`, cost factor 12 —
+  `server/src/utils/password.js`), create a `User` row, return a signed JWT.
+  A duplicate email/username is a `409`, resolved both by a pre-check and by
+  catching Prisma's `P2002` on the insert (closing the race between the two).
+- Login: look up by email (selecting `passwordHash` only for this one
+  query), `bcrypt.compare`, return a signed JWT. A nonexistent email and a
+  wrong password produce the exact same `401` — see
+  [AUTHENTICATION.md](./AUTHENTICATION.md#login-flow) for why, including the
+  dummy-hash timing consideration.
+- JWT payload: `{ sub: userId }` plus the standard `iat`/`exp` — nothing
+  else — signed with `JWT_SECRET`, expiring per `JWT_EXPIRES_IN`
+  (`server/src/utils/jwt.js`).
+- Token transport: `Authorization: Bearer <token>` header, checked by
+  `requireAuth` (`server/src/middleware/auth.middleware.js`). This
+  middleware establishes *authentication* only (the token's signature proves
+  who the caller is) — it does not query the database; anything needing
+  fresher user data or *authorization* looks it up itself from `req.user.id`.
+- `passwordHash` is never selected into an API response. Two distinct Prisma
+  `select` objects exist for this reason: one includes `passwordHash` for
+  the login comparison only, the other never selects it at all (used by
+  registration and `/me`) — the safe-vs-unsafe boundary is enforced at the
+  query itself, not left to a serializer to remember.
+- A dedicated `toSafeUser()` serializer (`server/src/utils/user.js`) allow-lists
+  exactly the fields an API response may contain, used identically by
+  register, login, and `/me` — never a raw spread of a Prisma row.
 
 ```mermaid
 sequenceDiagram
@@ -169,28 +192,35 @@ sequenceDiagram
     A->>S: registerUser(payload)
     S->>DB: check existing email/username
     S->>S: bcrypt.hash(password)
-    S->>DB: insert User
-    S->>S: sign JWT
+    S->>DB: insert User (safe select)
+    S->>S: sign JWT ({ sub: user.id })
     S-->>A: {user, token}
-    A-->>B: 201 {user, token}
+    A-->>B: 201 {success, data:{user, token}}
 
     B->>A: POST /api/auth/login {email, password}
     A->>S: loginUser(payload)
-    S->>DB: find User by email
+    S->>DB: find User by email (with passwordHash)
     S->>S: bcrypt.compare(password, passwordHash)
-    S->>S: sign JWT
+    S->>S: sign JWT ({ sub: user.id })
     S-->>A: {user, token}
-    A-->>B: 200 {user, token}
+    A-->>B: 200 {success, data:{user, token}}
 
-    B->>A: GET /api/projects (Authorization: Bearer <token>)
-    A->>A: auth middleware verifies JWT, attaches req.user
-    A->>S: listProjectsForUser(req.user.id)
-    S->>DB: query
-    S-->>A: projects
-    A-->>B: 200 {projects}
+    B->>A: GET /api/auth/me (Authorization: Bearer <token>)
+    A->>A: requireAuth verifies JWT, sets req.user = { id: sub } — no DB query
+    A->>S: getCurrentUser(req.user.id)
+    S->>DB: find User by id (safe select, no passwordHash)
+    S-->>A: user
+    A-->>B: 200 {success, data:{user}}
+
+    Note over A,S: A future GET /api/projects (Phase 6+) follows the same<br/>requireAuth step, then adds a project-role authorization<br/>check before reaching its service — see Section 10.
 ```
 
 ## 10. Authorization architecture (planned — later phase)
+
+Not implemented yet — deliberately out of scope for Phase 4, which only
+establishes *authentication* (proving who is calling). Authorization
+(deciding what that caller is allowed to do) is a separate concern, built
+once there's a resource worth restricting:
 
 Role-based, scoped to a project via `ProjectMember.role`:
 
@@ -200,12 +230,13 @@ Role-based, scoped to a project via `ProjectMember.role`:
   remove the owner.
 - **MEMBER** — create/update/move/comment on tasks, cannot manage membership.
 
-An `auth` middleware will verify the JWT and attach `req.user`. A separate
-`requireProjectRole(minRole)` middleware (later phase) will load the
-caller's `ProjectMember` row for the `:projectId` in the route and reject
-with 403 if the role is insufficient. Ownership is always cross-checked
-against `Project.ownerId`, not just `ProjectMember.role`, since the owner
-row is authoritative.
+The `requireAuth` middleware (Section 9, implemented) verifies the JWT and
+attaches `req.user = { id }`. A separate `requireProjectRole(minRole)`
+middleware (later phase) will run *after* `requireAuth`, load the caller's
+`ProjectMember` row for the `:projectId` in the route, and reject with 403
+if the role is insufficient. Ownership is always cross-checked against
+`Project.ownerId`, not just `ProjectMember.role`, since the owner row is
+authoritative.
 
 ## 11. Project membership model
 
@@ -310,13 +341,14 @@ Planned conventions:
 ## 17. API organization
 
 REST, versioned implicitly under `/api` (no `/v1` yet — added later if a
-breaking change is needed). Planned resource layout for later phases:
+breaking change is needed). Current + planned resource layout:
 
 ```
-/api/health            GET
-/api/health/db         GET
-/api/auth              POST /register, POST /login
-/api/users/me           GET, PATCH
+/api/health            GET                          — implemented (Phase 3)
+/api/health/db         GET                          — implemented (Phase 3)
+/api/auth              POST /register, POST /login, — implemented (Phase 4)
+                       GET /me (requireAuth)
+/api/users/me           GET, PATCH                  — planned (Phase 5, profile editing)
 /api/projects           GET, POST
 /api/projects/:id       GET, PATCH, DELETE
 /api/projects/:id/members         GET, POST, PATCH, DELETE
@@ -333,6 +365,12 @@ breaking change is needed). Planned resource layout for later phases:
 
 Each resource group gets its own `routes/*.routes.js`, mounted from a single
 `routes/index.js`, matching the Task2 convention.
+
+`/api/auth/me` and the planned `/api/users/me` are deliberately separate:
+the former is read-only "who am I" identity data returned as part of the
+auth module (Phase 4), the latter is full profile editing (Phase 5) —
+merging them would make the auth module depend on profile business logic
+it has no reason to know about.
 
 ## 18. Error-handling strategy
 
@@ -420,15 +458,28 @@ never an HTML error page.
 - `.env` files are git-ignored; only `.env.example` (placeholders) is
   committed.
 
+**Implemented in Phase 4:**
+
+- Passwords hashed with bcryptjs (cost 12); `passwordHash` is selected from
+  the database only for the login comparison and is never serialized into
+  any API response (enforced by two separate Prisma `select` shapes, plus
+  an allow-list serializer — see Section 9).
+- JWTs signed with `JWT_SECRET`, minimal payload (`sub` only), expire per
+  `JWT_EXPIRES_IN`. Every failure mode of `requireAuth` (missing header,
+  wrong scheme, empty/malformed/expired/tampered token, wrong signature)
+  returns the identical generic `401` — none of them is distinguishable
+  from the response.
+- Login failure (nonexistent email vs. wrong password) is a single generic
+  `401 "Invalid email or password"`, with a dummy bcrypt comparison run for
+  a nonexistent email so response timing doesn't leak which case it was.
+- Registration validation happens before any database or bcrypt work, and
+  never reveals database internals in its error messages.
+
 **Planned for later phases:**
 
-- Passwords hashed with bcryptjs; `passwordHash` never serialized into an
-  API response.
-- JWTs signed with `JWT_SECRET` (already validated/required in production as
-  of this phase, so Phase 4 has no configuration left to add).
 - Authorization checks (project role, resource ownership) happen in the
   service layer, not just the UI, so the API is safe even if the frontend is
-  bypassed.
+  bypassed. (Phase 4 established *authentication* only — see Section 10.)
 
 ## 21. Testing strategy
 
@@ -437,11 +488,25 @@ never an HTML error page.
   JSON (400), oversized body (413), unknown route (404), allowed vs.
   arbitrary CORS origin, and a real database-down scenario (503, verified by
   stopping the Postgres container) — all confirmed against the running
-  server. Automated request-level tests are added once real resource
-  endpoints exist.
+  server. Automated request-level tests are added once there's enough
+  surface area to justify a test runner as a dependency.
+- **Phase 4 authentication verification:** the full register → login → `/me`
+  sequence against real PostgreSQL; every validation rule (bad username
+  shapes including the mixed-case case, bad email, short/over-length
+  password, missing fields); duplicate email and duplicate username (409);
+  wrong password and nonexistent email (both the identical generic 401);
+  every `requireAuth` rejection path (no header, `Basic` scheme, empty
+  `Bearer`, malformed token, tampered token, expired token, a token signed
+  with a different secret); the decoded JWT payload (confirmed to contain
+  only `sub`/`iat`/`exp`); a Phase 2 seed account logging in through the new
+  endpoint with its original seed-time password hash; and a full regression
+  of every Phase 3 behavior (health, 404, malformed JSON, oversized body,
+  CORS). See [AUTHENTICATION.md](./AUTHENTICATION.md) for the complete
+  scenario list and results.
 - **Database verification:** `prisma migrate`, `prisma db seed`, and direct
   queries (via `prisma studio` or ad hoc scripts) confirm schema integrity
-  and seed idempotency.
+  and seed idempotency. Phase 4 required no schema change — the Phase 2
+  `User` model already had everything authentication needs.
 - **Build verification:** `npm run build` for both workspaces must succeed
   with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
   independently.
@@ -464,9 +529,16 @@ never an HTML error page.
   (malformed JSON, oversized body, Prisma errors), `helmet`, dev request
   logging, guarded graceful shutdown, consistent response envelope. No new
   resource routes — `/api` still only exposes `health` and `health/db`.
-- **Phase 4+ (not started)** — authentication, projects/members API,
+- **Phase 4** — authentication: registration, login, JWT issuance and
+  verification (`requireAuth`), `GET /api/auth/me`, bcrypt password
+  hashing, input validation, duplicate-account handling, safe user
+  serialization. No schema change — the Phase 2 `User` model already had
+  everything this needed. No authorization (project roles), no profile
+  editing, no frontend auth UI — those remain later phases.
+- **Phase 5+ (not started)** — user profile editing, projects/members API,
   boards/tasks API, comments API, notifications API, full frontend
-  (dashboard, Kanban board, task detail view), Socket.IO real-time layer.
+  (dashboard, Kanban board, task detail view, login/register UI),
+  Socket.IO real-time layer.
 
 ## 23. Data flow
 
@@ -535,3 +607,30 @@ Example: a user moves a task to a different board.
   automatically; adding a wrapper on top would just be the same behavior
   twice. Confirmed directly against the installed Express version rather
   than assumed from framework version numbers alone.
+- **Username case is rejected, not silently coerced** — `auth.validator.js`
+  checks the `^[a-z0-9_]{3,30}$` shape against the trimmed input *before*
+  lowercasing it, so `UserName` is a `400`, not a silently-renamed
+  `username`. The alternative (lowercase first, then validate) would let a
+  user register believing their username is `UserName` while the database
+  actually stores something else — a small but real trust violation for an
+  identifier a user chose and expects to see reflected back to them.
+- **`requireAuth` never queries the database** — a JWT's signature is
+  already sufficient proof of identity; looking the user up on every
+  authenticated request would be a write-nothing, read-only database hit on
+  the hot path for no benefit *to authentication specifically*. Later
+  authorization middleware (Section 10) will query the database — but that
+  is answering a different question ("is this user allowed to do X"), not
+  "who is this user."
+- **Two Prisma `select` shapes for `User`, not one shape plus a filter** —
+  the query that needs `passwordHash` (login) and the queries that must
+  never see it (register's insert, `/me`) use two separately-declared
+  `select` objects (`server/src/services/auth.service.js`). The safe/unsafe
+  boundary is enforced at the database query itself; a single "select
+  everything, then delete `passwordHash` before responding" approach has a
+  failure mode this doesn't: forgetting the deletion.
+- **A dummy bcrypt comparison on login for a nonexistent email** — without
+  it, a real bcrypt compare only happens when the email exists, giving a
+  timing difference an attacker could use to enumerate registered emails.
+  The dummy hash is computed once per process (not per request) purely to
+  keep that comparison's cost consistent — it is not, and is never used as,
+  a real password.
