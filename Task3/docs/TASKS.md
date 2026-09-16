@@ -338,8 +338,10 @@ project with its own board:
 
 ## Current limitations
 
-- **No task assignment.** `TaskAssignee` exists in the schema but nothing
-  in this phase creates, reads, or deletes a row in it — that's Phase 9.
+- **Task assignment is documented separately, in
+  [ASSIGNMENTS.md](./ASSIGNMENTS.md) (Phase 9)** — not a limitation of this
+  module, just out of this document's scope; `TaskAssignee` CRUD is fully
+  implemented.
 - **No comments, notifications, or activity-feed writes** from this
   module — Phases 10 and 11.
 - **No drag-and-drop reordering algorithm** — `position` can be set

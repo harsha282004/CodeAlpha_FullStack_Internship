@@ -12,9 +12,11 @@ router.use('/users', profileRoutes)
 router.use('/projects', projectRoutes)
 
 // Board routes are nested under /projects/:projectId/boards (mounted from
-// within project.routes.js), and task routes are nested one level deeper
-// under /projects/:projectId/boards/:boardId/tasks (mounted from within
-// board.routes.js) — not here in either case; see those files.
+// within project.routes.js), task routes one level deeper under
+// /projects/:projectId/boards/:boardId/tasks (mounted from within
+// board.routes.js), and assignee routes one level deeper still under
+// .../tasks/:taskId/assignees (mounted from within task.routes.js) — not
+// here in any case; see those files.
 //
 // Mounted here in later phases, in this order:
 //   router.use('/comments', commentRoutes)

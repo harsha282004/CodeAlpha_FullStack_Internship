@@ -7,7 +7,7 @@ assignments, and comments — built with React, Express, and PostgreSQL.
 
 ## Status
 
-**Current phase: Phase 8 complete (task cards).** Architecture is
+**Current phase: Phase 9 complete (task assignment).** Architecture is
 documented, the monorepo scaffolding (client + server) runs, the full Prisma
 schema + seed data are in place, the Express API has its production-ready
 foundation (centralized error handling, restricted CORS, security headers,
@@ -16,18 +16,18 @@ authentication runs against PostgreSQL, authenticated users can view/edit
 their profile and look up or search for other users, users can create
 projects and manage OWNER/ADMIN/MEMBER membership with every write
 authorized against the caller's actual role in PostgreSQL, each project
-organizes its work into ordered boards, and each board can now hold task
-cards — title, description, priority, due date, and position, ordered and
-filtered strictly within their board.
+organizes its work into ordered boards, each board holds task cards, and
+each task can now be assigned to one or more of that task's own project
+members — never to anyone outside the project.
 
-No other application features are implemented yet: task assignment (Phase
-9), task comments (Phase 10), notifications (Phase 11), Socket.IO/real-time
-(Phase 12), and the real dashboard/Kanban UI are all planned for later
-phases. The homepage still only confirms the frontend can reach the API and
-the database — there is no login/register/profile/project/board/task UI
-yet, since the frontend for any of this is a later phase. `/api` currently
-exposes `health`, `auth`, `users`, and `projects` (including nested boards
-and, within those, nested tasks) only.
+No other application features are implemented yet: task comments (Phase
+10), notifications (Phase 11), Socket.IO/real-time (Phase 12), and the real
+dashboard/Kanban UI are all planned for later phases. The homepage still
+only confirms the frontend can reach the API and the database — there is no
+login/register/profile/project/board/task UI yet, since the frontend for
+any of this is a later phase. `/api` currently exposes `health`, `auth`,
+`users`, and `projects` (including nested boards, tasks, and task
+assignees) only.
 
 ## Stack
 
@@ -168,18 +168,21 @@ error — is JSON with a `success` boolean:
 
 Everything else (`/api/comments`, `/api/notifications`) is deliberately not
 mounted yet — those are later phases. `/api/auth`, `/api/users`,
-`/api/projects`, the nested `/api/projects/:id/boards`, and the
-further-nested `/api/projects/:id/boards/:boardId/tasks` are all now live —
-see [Authentication (Phase 4)](#authentication-phase-4),
+`/api/projects`, the nested `/api/projects/:id/boards`, the further-nested
+`/api/projects/:id/boards/:boardId/tasks`, and the even-further-nested
+`.../tasks/:taskId/assignees` are all now live — see
+[Authentication (Phase 4)](#authentication-phase-4),
 [User profiles (Phase 5)](#user-profiles-phase-5),
 [Projects & membership (Phase 6)](#projects--membership-phase-6),
-[Project boards (Phase 7)](#project-boards-phase-7), and
-[Task cards (Phase 8)](#task-cards-phase-8) below, plus
+[Project boards (Phase 7)](#project-boards-phase-7),
+[Task cards (Phase 8)](#task-cards-phase-8), and
+[Task assignment (Phase 9)](#task-assignment-phase-9) below, plus
 [docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md),
 [docs/USER_PROFILES.md](./docs/USER_PROFILES.md),
 [docs/PROJECTS.md](./docs/PROJECTS.md),
-[docs/BOARDS.md](./docs/BOARDS.md), and
-[docs/TASKS.md](./docs/TASKS.md) for the full detail.
+[docs/BOARDS.md](./docs/BOARDS.md),
+[docs/TASKS.md](./docs/TASKS.md), and
+[docs/ASSIGNMENTS.md](./docs/ASSIGNMENTS.md) for the full detail.
 
 **Middleware order:** `helmet` → CORS → request logger (dev only) →
 `express.json` (100kb limit) → `/api` router → 404 handler → centralized
@@ -432,22 +435,60 @@ in one project and a second, independently owned project.
 
 **Any project member can create, view, and update a task's content/
 priority/position/due date — deletion is OWNER/ADMIN only.** Task
-*assignment* (who a task is for) is Phase 9 and isn't implemented yet;
-Phase 8 only establishes the card itself.
+*assignment* (who a task is for) is documented next, in Phase 9.
+
+## Task assignment (Phase 9)
+
+A task can now have one or more assigned project members. Full detail
+lives in [docs/ASSIGNMENTS.md](./docs/ASSIGNMENTS.md); this is the short
+version.
+
+**Routes** (all under
+`/api/projects/:projectId/boards/:boardId/tasks/:taskId/assignees`, all
+require `Authorization: Bearer <token>` and the full project → board →
+task hierarchy):
+
+| Method | Path | Minimum role | Behavior |
+|---|---|---|---|
+| `POST` | `/` | OWNER or ADMIN | Assigns an existing project member to the task |
+| `GET` | `/` | any member | Lists the task's assignees |
+| `GET` | `/:userId` | any member | Whether that specific member is assigned (`200`) or not (`404`) |
+| `DELETE` | `/:userId` | OWNER or ADMIN | Removes the assignment |
+
+**No schema change** — the Phase 2 `TaskAssignee` model already had
+everything this phase needed (composite `(taskId, userId)` primary key,
+`assignedAt`).
+
+**An assignee must already be a member of the task's project — this is the
+core rule the whole phase exists to enforce.** Prisma has no way to express
+that as a foreign key (`TaskAssignee` and `ProjectMember` are unrelated
+tables), so it's checked in application code before every assignment is
+created: the target user must exist (`404` otherwise) *and* have a
+`ProjectMember` row for this exact project (`404` otherwise, distinctly
+coded) — a user who only belongs to a different project can never be
+assigned here, verified directly during testing.
+
+**Duplicate assignment is a `409`,** backed by the same composite primary
+key that makes it impossible at the database level regardless of timing —
+two simultaneous requests to assign the same user to the same task can
+only ever produce one row.
+
+**Removing an assignee deletes only the `TaskAssignee` row** — never the
+`User`, the `ProjectMember`, or the `Task` itself. Verified directly after
+every removal during testing.
 
 ## Current phase
 
 Phase 0 (architecture/planning), Phase 1 (scaffolding), Phase 2 (database
 layer), Phase 3 (backend foundation), Phase 4 (authentication), Phase 5
 (user profiles), Phase 6 (projects & membership), Phase 7 (project
-boards), and Phase 8 (task cards) are complete. Task assignment (Phase 9),
-task comments (Phase 10), notifications (Phase 11), Socket.IO real-time
+boards), Phase 8 (task cards), and Phase 9 (task assignment) are complete.
+Task comments (Phase 10), notifications (Phase 11), Socket.IO real-time
 updates (Phase 12), and the full frontend UI are planned for subsequent
 phases.
 
 ## Planned features
 
-- Task assignment (who a task is for)
 - Comments on tasks
 - Project activity timeline
 - Notifications

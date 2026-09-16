@@ -29,8 +29,10 @@ function taskNotFoundError() {
 // either. Checking against boardId alone is sufficient: requireBoardInProject
 // has already confirmed this boardId belongs to the request's projectId, so
 // the projectId ↔ boardId ↔ task chain is fully verified transitively
-// without a redundant second check here.
-async function getTaskWithinBoard(boardId, taskId) {
+// without a redundant second check here. Exported so requireTaskInBoard
+// (Phase 9's task-auth middleware, gating every nested assignee route) can
+// reuse this exact check instead of duplicating the same query.
+export async function getTaskWithinBoard(boardId, taskId) {
   if (!UUID_REGEX.test(taskId)) {
     throw taskNotFoundError()
   }
@@ -122,9 +124,10 @@ export async function deleteTask(boardId, taskId) {
   // TaskAssignee, Comment, and this task's own Notification rows all
   // cascade at the schema level (onDelete: Cascade); Activity.taskId nulls
   // out instead (SetNull) so a project's timeline entry survives even
-  // after the task it references is gone (see DATABASE_SCHEMA.md). Phases
-  // 9/10 haven't introduced assignee/comment creation yet, so no such row
-  // can currently reference any task — documented here so the cascade
-  // isn't a surprise once those exist.
+  // after the task it references is gone (see DATABASE_SCHEMA.md). As of
+  // Phase 9, TaskAssignee rows can genuinely exist, so this cascade is no
+  // longer inert — verified directly in this phase (deleting a task with
+  // assignees leaves zero orphaned task_assignees rows). Comment/
+  // Notification creation still doesn't exist yet (Phases 10/11).
   await prisma.task.delete({ where: { id: taskId } })
 }

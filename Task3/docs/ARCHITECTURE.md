@@ -290,8 +290,9 @@ would only create a place for them to disagree.
 under `/api/projects/:projectId/boards` — see [BOARDS.md](./BOARDS.md)).
 **Task CRUD implemented in Phase 8** (`GET/POST/PATCH/DELETE` under
 `/api/projects/:projectId/boards/:boardId/tasks` — see
-[TASKS.md](./TASKS.md)). Task assignment, comments, notifications, and
-Socket.IO remain Phases 9–12.
+[TASKS.md](./TASKS.md)). **Task assignment implemented in Phase 9** (see
+Section 13 and [ASSIGNMENTS.md](./ASSIGNMENTS.md)). Comments,
+notifications, and Socket.IO remain Phases 10–12.
 
 - A `Project` has many `Board`s (e.g. "To Do", "In Progress", "Review",
   "Done" — names are per-project data, not hardcoded enum values, so
@@ -343,19 +344,32 @@ flowchart LR
     T1 -->|has many| C1[Comment]
 ```
 
-## 13. Task assignment model (planned — Phase 9)
+## 13. Task assignment model
 
-The task card itself (title, description, priority, position, due date) is
-implemented as of Phase 8 — see [TASKS.md](./TASKS.md). *Assigning* a task
-to one or more members is this section's subject and remains Phase 9.
+**Implemented in Phase 9** (`POST/GET/DELETE` under
+`/api/projects/:projectId/boards/:boardId/tasks/:taskId/assignees` — see
+[ASSIGNMENTS.md](./ASSIGNMENTS.md)). The task card itself (title,
+description, priority, position, due date) was Phase 8.
 
 - `TaskAssignee` is a join table between `Task` and `User`, with a composite
   primary key `(taskId, userId)` — a task can have zero or more assignees,
-  and a user cannot be assigned to the same task twice.
-- Later-phase business rule (enforced in the service layer, not the
-  schema): an assignee must already be a `ProjectMember` of the task's
-  project. Prisma cannot express this cross-table constraint declaratively,
-  so it is validated before the `TaskAssignee` row is created.
+  and a user cannot be assigned to the same task twice (enforced by the
+  primary key itself, not just an application-level pre-check — a
+  duplicate `POST` maps Prisma's `P2002` to a `409`).
+- **The business rule anticipated since Phase 2 is now enforced:** an
+  assignee must already be a `ProjectMember` of the task's project. Prisma
+  cannot express this cross-table constraint declaratively (`TaskAssignee`
+  and `ProjectMember` share no foreign key), so `assignment.service.js`
+  checks it explicitly — target user exists, then target user has a
+  `ProjectMember` row for this exact `projectId` — before the
+  `TaskAssignee` row is ever created. Verified directly against the
+  database after implementation: zero `TaskAssignee` rows anywhere in the
+  database (new or pre-existing seed data) reference a user who isn't a
+  member of that task's project.
+- Removing an assignment (`DELETE .../assignees/:userId`) deletes only the
+  `TaskAssignee` row — the `User`, `ProjectMember`, and `Task` are
+  untouched, since `TaskAssignee` is a pure join row with no children of
+  its own to cascade.
 
 ## 14. Comment model
 
@@ -433,7 +447,10 @@ breaking change is needed). Current + planned resource layout:
 /api/projects/:id/boards/:boardId/tasks           GET, POST (any member)          — implemented (Phase 8)
 /api/projects/:id/boards/:boardId/tasks/:taskId   GET, PATCH (any member),        — implemented (Phase 8)
                                                    DELETE (OWNER/ADMIN)
-/api/tasks/:id/assignees           POST, DELETE
+/api/.../tasks/:taskId/assignees          GET (any member),         — implemented (Phase 9)
+                                           POST (OWNER/ADMIN)
+/api/.../tasks/:taskId/assignees/:userId  GET (any member),         — implemented (Phase 9)
+                                           DELETE (OWNER/ADMIN)
 /api/tasks/:id/comments             GET, POST
 /api/comments/:id                   PATCH, DELETE
 /api/projects/:id/activity           GET
@@ -471,6 +488,15 @@ it calls that function's exported `getBoardWithinProject` directly, so
 there is exactly one implementation of "does this board belong to this
 project," reused by both board.controller.js's direct board operations and
 every nested task route's baseline gate.
+
+Assignees (Phase 9) go one level deeper still: `assignment.routes.js`,
+mounted from `task.routes.js` at
+`router.use('/:taskId/assignees', requireTaskInBoard(), assignmentRoutes)`.
+`requireTaskInBoard` (`server/src/middleware/taskAuth.middleware.js`)
+reuses task.service.js's exported `getTaskWithinBoard` the same way
+`requireBoardInProject` reuses `getBoardWithinProject` — one implementation
+per hierarchy level, each reused by both its own resource's controller and
+whatever's nested underneath it.
 
 `/api/auth/me` and `/api/users/me` are deliberately separate, not
 duplicates: the former is read-only "who am I" identity data returned as
@@ -686,9 +712,35 @@ never an HTML error page.
   6, and 7. See [TASKS.md](./TASKS.md) for the complete scenario list,
   results, and the reasoning behind treating board placement (not a
   `status` field) as a task's workflow stage.
+- **Phase 9 assignment verification:** unauthenticated requests rejected on
+  all four endpoints; every hierarchy miss (nonexistent project/board/
+  task, task requested through a sibling board in the same project, task
+  requested through an entirely different project) resolved at the correct
+  level — `404` in every case; OWNER and ADMIN both assign successfully,
+  MEMBER and non-member `403`; nonexistent target user `404`; **a user who
+  belongs only to a different project rejected with a distinct `404`**
+  (`USER_NOT_A_PROJECT_MEMBER`) when an attempt is made to assign them —
+  the core guarantee this phase exists to enforce; duplicate assignment
+  `409`; malformed `userId` in the body `400`, unsupported body field
+  (`taskId`) `400`, missing `userId` `400`; list returns safe fields only
+  (no `passwordHash`, no `email`) in deterministic `assignedAt` order;
+  status check returns `200` for an assigned member and `404` for an
+  unassigned one (including a target who isn't even a project member);
+  non-member `403` on list and status; MEMBER and non-member `403` on
+  remove, **removal attempted through the wrong board `404`s without
+  touching the real assignment**, OWNER and ADMIN both remove
+  successfully, confirmed via a follow-up status check, removing an
+  already-gone assignment `404`; the target `User`, their `ProjectMember`
+  row, and the `Task` itself all confirmed still present after every
+  removal; direct SQL confirmed zero orphaned `task_assignees` rows, zero
+  duplicate `(task_id, user_id)` pairs, and — checked against the entire
+  table, new rows and all 60 pre-existing seeded assignments together —
+  zero assignees who aren't members of their task's project; full
+  regression of Phase 3 through 8. See [ASSIGNMENTS.md](./ASSIGNMENTS.md)
+  for the complete scenario list and results.
 - **Database verification:** `prisma migrate`, `prisma db seed`, and direct
   queries (via `prisma studio` or ad hoc scripts) confirm schema integrity
-  and seed idempotency. Phases 4 through 8 required no schema change — the
+  and seed idempotency. Phases 4 through 9 required no schema change — the
   Phase 2 schema already had everything each needed.
 - **Build verification:** `npm run build` for both workspaces must succeed
   with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
@@ -759,9 +811,23 @@ never an HTML error page.
   [Important design decisions](#24-important-design-decisions). No task
   assignment, comments, notifications, Socket.IO, or frontend UI — those
   remain later phases.
-- **Phase 9+ (not started)** — task assignment API, comments API,
-  notifications API, full frontend (dashboard, Kanban board, task detail
-  view, login/register/project/board UI), Socket.IO real-time layer.
+- **Phase 9** — task assignment: `TaskAssignee` CRUD (add/list/status/
+  remove) under
+  `/api/projects/:projectId/boards/:boardId/tasks/:taskId/assignees[/:userId]`,
+  reusing Phase 6–8's authorization middleware unchanged, plus a new
+  `requireTaskInBoard` verifying the task-within-board half of the
+  hierarchy for every nested assignee route (calling task.service.js's
+  existing check rather than duplicating it). The core rule this phase
+  enforces: an assignee must already be a `ProjectMember` of the task's
+  project, checked in application code since Prisma can't express it as a
+  foreign key — verified directly against the database, including all
+  pre-existing seed assignments, with zero violations. No schema change —
+  the Phase 2 `TaskAssignee` model already had everything this needed. No
+  comments, notifications, Socket.IO, or frontend UI — those remain later
+  phases.
+- **Phase 10+ (not started)** — task comments API, notifications API, full
+  frontend (dashboard, Kanban board, task detail view,
+  login/register/project/board UI), Socket.IO real-time layer.
 
 ## 23. Data flow
 
@@ -975,3 +1041,29 @@ Example: a user moves a task to a different board.
   transitively guarantee the whole project → board → task chain — a
   redundant `task.projectId` comparison would check a fact already
   established, not add a new guarantee.
+- **A target assignee who exists but isn't a project member is a `404`,
+  not a `403`** (`USER_NOT_A_PROJECT_MEMBER`) — `403` in this codebase
+  means "the requester lacks permission," which isn't what's true here:
+  the requester (already confirmed `OWNER`/`ADMIN` by `requireProjectRole`)
+  is fully authorized to add an assignee; the problem is that the
+  *target* isn't a valid one. Kept in the same `404` family as "user
+  doesn't exist at all," with a distinct code, since both describe the
+  same practical fact from the caller's side: this `userId` doesn't
+  resolve to someone assignable here.
+- **`getAssignmentStatus` never separately checks the target's project
+  membership** — only whether a `TaskAssignee` row exists for
+  `(taskId, userId)`. This is sufficient rather than an oversight: a
+  `TaskAssignee` row can only exist for someone who was a project member
+  at the moment they were assigned (enforced by `addAssignee`), so its
+  absence already means "not assigned" regardless of whether the target
+  is, was, or never was a project member — there's no separate case to
+  handle.
+- **No `$transaction` wraps `addAssignee`'s membership checks and the
+  `TaskAssignee` insert** — the same reasoning `membership.service.js`'s
+  `addMember` already established for `ProjectMember`: the actual
+  guarantee against a duplicate `(taskId, userId)` row is the composite
+  primary key itself, enforced by Postgres regardless of timing, not by
+  wrapping a read-then-write in a transaction. A transaction here would
+  add ceremony without adding a guarantee the primary key doesn't already
+  provide for the one race condition the phase brief calls out
+  specifically (two simultaneous identical assignment requests).
