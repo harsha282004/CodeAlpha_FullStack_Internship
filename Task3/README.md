@@ -7,20 +7,20 @@ assignments, and comments — built with React, Express, and PostgreSQL.
 
 ## Status
 
-**Current phase: Phases 13–15 complete — the full frontend.** Every backend
-capability built in Phases 3–12 (auth, profiles, projects, membership,
-boards, tasks, assignments, comments, notifications, Socket.IO) now has a
-real, working UI backed entirely by the live Express API — no mock data,
-no fake statistics, no invented backend features. The app has a typed API
-client, JWT-based auth state with session restoration, protected routing,
-a hand-built Tailwind design system, a Kanban board (Boards *are* the
-columns — the backend has no separate task-status concept), task
-comments, a notification bell, member management, profile/settings, and a
-Socket.IO client that patches the UI live as project/board/task/comment/
-notification events arrive. PostgreSQL remains the single source of truth
-throughout — Socket.IO only announces that a change already committed to
-the database, and every mutation still goes through the same validated
-REST endpoint whether or not a socket is connected.
+**Current phase: Phases 16–18 complete — security audit, automated
+testing, and a demo dataset.** Every capability built in Phases 3–15
+(auth, profiles, projects, membership, boards, tasks, assignments,
+comments, notifications, Socket.IO, and the full frontend) now has an
+automated test suite exercising it against the real backend and a real
+browser — 288 backend tests (Vitest + Supertest + a real Socket.IO
+connection) and 16 frontend E2E tests (Playwright), all passing — plus a
+documented, actively-tested security audit (see
+[docs/SECURITY_AUDIT.md](./docs/SECURITY_AUDIT.md)) and a small, curated,
+fictional demo dataset (see [docs/DEMO_DATA.md](./docs/DEMO_DATA.md))
+alongside the existing development seed. PostgreSQL remains the single
+source of truth throughout — Socket.IO only announces that a change
+already committed to the database, and every mutation still goes through
+the same validated REST endpoint whether or not a socket is connected.
 
 `/api` exposes `health`, `auth`, `users`, `projects` (with nested boards,
 tasks, task assignees, and task comments), and `notifications`.
@@ -31,7 +31,7 @@ tasks, task assignees, and task comments), and `notifications`.
 - **Backend:** Node.js, Express.js, REST API, Socket.IO
 - **Database:** PostgreSQL with Prisma ORM
 - **Auth:** JWT, bcryptjs
-- **Testing:** Playwright (browser E2E) for the frontend, curl/Node integration scripts for the API
+- **Testing:** Vitest + Supertest + socket.io-client (backend, `server/tests/`), Playwright (frontend E2E, `client/e2e/`)
 
 ## Planned architecture
 
@@ -51,7 +51,14 @@ Task3/
 ├── server/          # Express.js backend + Prisma
 │   ├── prisma/
 │   │   ├── schema.prisma
-│   │   └── seed.js
+│   │   ├── seed.js        # development seed
+│   │   └── seed-demo.js    # demo dataset (Phase 18)
+│   ├── tests/                # Vitest + Supertest + socket.io-client (Phase 17)
+│   │   ├── auth/ users/ projects/ boards/ tasks/
+│   │   ├── assignments/ comments/ notifications/
+│   │   ├── security/           # isolation, authorization matrix, mass assignment, validation
+│   │   └── realtime/           # Socket.IO
+│   ├── .env.test.example
 │   └── src/
 ├── docs/
 │   ├── ARCHITECTURE.md
@@ -65,7 +72,10 @@ Task3/
 │   ├── COMMENTS.md
 │   ├── NOTIFICATIONS.md
 │   ├── REALTIME.md
-│   └── FRONTEND.md
+│   ├── FRONTEND.md
+│   ├── SECURITY_AUDIT.md
+│   ├── TESTING.md
+│   └── DEMO_DATA.md
 ├── docker-compose.yml
 ├── package.json
 ├── .env.example
@@ -148,6 +158,25 @@ realtime, and unauthorized-access flows; `client/e2e/responsive.spec.ts`
 checks every required viewport for horizontal overflow. Both register
 fresh throwaway accounts per run, so the suite is safe to re-run
 repeatedly.
+
+### 7. Backend automated tests (optional)
+
+The backend test suite (Vitest + Supertest, 288 tests) needs its own
+**isolated** database — never point it at the same database as step 4,
+since it truncates tables between test files:
+
+```bash
+cd server
+cp .env.test.example .env.test         # adjust credentials if yours differ
+docker exec taskflow-task3-postgres psql -U taskflow -d taskflow -c "CREATE DATABASE taskflow_test"
+DATABASE_URL="$(grep DATABASE_URL .env.test | cut -d= -f2- | tr -d '\"')" npx prisma migrate deploy
+npm test              # single run
+npm run test:watch    # watch mode
+```
+
+See [docs/TESTING.md](./docs/TESTING.md) for the full test structure and
+[docs/SECURITY_AUDIT.md](./docs/SECURITY_AUDIT.md) for how this same
+suite backs the security audit's findings.
 
 ## Seed data (development only)
 
@@ -637,16 +666,41 @@ overflow on every page (including the Kanban board and an open task modal)
 at six required viewport sizes from 375px to 1440px. See
 [docs/FRONTEND.md](./docs/FRONTEND.md) for what this did and didn't cover.
 
+## Security, testing & demo data (Phases 16–18)
+
+**Security audit (Phase 16):** an actively-tested audit, not just a code
+read — authentication, password handling, OWNER/ADMIN/MEMBER
+authorization, cross-project IDOR (including explicit URL substitution),
+mass-assignment/field-injection resistance, input validation, Prisma/SQL
+safety, CORS/Helmet, Socket.IO security, and notification-ownership
+isolation. Full results, including what was and wasn't tested, in
+[docs/SECURITY_AUDIT.md](./docs/SECURITY_AUDIT.md).
+
+**Automated testing (Phase 17):** Vitest + Supertest against the real
+Express app and an isolated `taskflow_test` PostgreSQL database (never the
+development database), plus real `socket.io-client` connections for
+realtime tests — **288 backend tests across 14 files**, all passing.
+Playwright's existing frontend suite was extended rather than replaced —
+**16 tests across 2 files**, all passing. Full structure, coverage
+breakdown, how to run them, and known limitations in
+[docs/TESTING.md](./docs/TESTING.md).
+
+**Demo dataset (Phase 18):** a small, curated, fictional dataset (6 named
+users, 4 projects, 20 boards, 24 tasks, 48 comments) — separate from and
+compatible with the existing development seed, with notifications
+generated by calling the real `notification.service.js`, not by
+inserting rows directly. Run with `npm run db:seed:demo` (see
+[docs/DEMO_DATA.md](./docs/DEMO_DATA.md) for credentials and full detail —
+clearly marked development/demo only).
+
 ## Current phase
 
-All 15 phases are complete: architecture/planning, scaffolding, the
+All 18 phases are complete: architecture/planning, scaffolding, the
 database layer, backend foundation, authentication, user profiles,
 projects & membership, project boards, task cards, task assignment, task
 comments, notifications, Socket.IO real-time updates, the full frontend
-foundation (API client, auth, routing, layout, design system), the
-complete UI (every page backed by a real endpoint, plus the Socket.IO
-client), and the UI/UX polish pass (responsive, accessible, loading/empty/
-error states, toasts, confirmations).
+foundation, the complete UI, the UI/UX polish pass, the security audit,
+the automated test suite, and the demo dataset.
 
 ## Planned features
 
@@ -656,5 +710,8 @@ error states, toasts, confirmations).
   to show)
 - A keyboard- and touch-accessible way to reorder Kanban cards (today's
   drag-and-drop is mouse-only — see [docs/FRONTEND.md](./docs/FRONTEND.md#kanban--board-is-the-column-important))
+- Login/registration rate-limiting (a known, documented gap — see
+  [docs/SECURITY_AUDIT.md](./docs/SECURITY_AUDIT.md#remaining-limitations))
+- A CI pipeline to run the automated test suite on every push
 - Deployment/hosting configuration (explicitly out of scope for every
   phase so far)
