@@ -62,3 +62,98 @@ Example:
 
 ```text
 To Do → In Progress → Review → Done
+
+🏗️ Architecture
+                  TASKFLOW
+                     │
+                     ▼
+             React + TypeScript
+                     │
+                     │ REST API
+                     ▼
+              Express.js Backend
+                     │
+                     ▼
+                Service Layer
+                     │
+                     ▼
+                   Prisma
+                     │
+                     ▼
+                PostgreSQL
+                     
+                     ▲
+                     │
+                 Socket.IO
+                     │
+                     ▼
+             Connected Members
+
+🗄️ Database Structure
+User
+ │
+ ├── Project
+ │      │
+ │      ├── ProjectMember
+ │      │
+ │      └── Board
+ │             │
+ │             └── Task
+ │                    │
+ │                    ├── TaskAssignee
+ │                    └── Comment
+ │
+ ├── Notification
+ │
+ └── Activity
+
+🔒 Security
+
+TaskFlow implements server-side security and authorization.
+
+Authentication
+Passwords are hashed using bcrypt.
+JWT is used to authenticate API requests.
+Protected routes require authentication.
+
+📊 Demo Dataset
+
+The TaskFlow demo dataset contains realistic relational data for demonstrating the application.
+
+Initial seed data includes:
+
+15 users
+4 projects
+22 project members
+16 boards
+40 tasks
+60 task assignments
+120 comments
+148 notifications
+242 activities
+
+The seed process was tested for deterministic and idempotent behavior.
+
+📂 Project Structure
+Task3/
+│
+├── client/
+│   └── React + TypeScript frontend
+│
+├── server/
+│   └── Express + Prisma backend
+│
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── DATABASE_SCHEMA.md
+│   ├── PROJECTS.md
+│   ├── BOARDS.md
+│   ├── TASKS.md
+│   ├── COMMENTS.md
+│   ├── NOTIFICATIONS.md
+│   ├── REALTIME.md
+│   └── SECURITY_AUDIT.md
+│
+├── docker-compose.yml
+├── package.json
+└── README.md
