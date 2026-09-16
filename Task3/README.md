@@ -7,32 +7,31 @@ assignments, and comments — built with React, Express, and PostgreSQL.
 
 ## Status
 
-**Current phase: Phases 10–12 complete (task comments, notifications, and
-Socket.IO real-time updates).** Architecture is documented, the monorepo
-scaffolding (client + server) runs, the full Prisma schema + seed data are
-in place, the Express API has its production-ready foundation, real JWT
-authentication runs against PostgreSQL, users can manage their profile,
-projects, OWNER/ADMIN/MEMBER membership, boards, task cards, and task
-assignment — and now, on top of all of that: tasks support a threaded
-comment discussion, real application events generate real notifications
-(never fake/random ones), and every REST mutation broadcasts a real-time
-Socket.IO event to everyone authorized to see it. PostgreSQL remains the
-single source of truth throughout — Socket.IO only announces that a change
-already committed to the database, never a replacement for it.
+**Current phase: Phases 13–15 complete — the full frontend.** Every backend
+capability built in Phases 3–12 (auth, profiles, projects, membership,
+boards, tasks, assignments, comments, notifications, Socket.IO) now has a
+real, working UI backed entirely by the live Express API — no mock data,
+no fake statistics, no invented backend features. The app has a typed API
+client, JWT-based auth state with session restoration, protected routing,
+a hand-built Tailwind design system, a Kanban board (Boards *are* the
+columns — the backend has no separate task-status concept), task
+comments, a notification bell, member management, profile/settings, and a
+Socket.IO client that patches the UI live as project/board/task/comment/
+notification events arrive. PostgreSQL remains the single source of truth
+throughout — Socket.IO only announces that a change already committed to
+the database, and every mutation still goes through the same validated
+REST endpoint whether or not a socket is connected.
 
-The only thing not implemented yet is the **frontend.** There is no
-login/register/profile/project/board/task/comment/notification UI, and no
-Socket.IO client integration — those are later, frontend-only phases. `/api`
-now exposes `health`, `auth`, `users`, `projects` (with nested boards,
+`/api` exposes `health`, `auth`, `users`, `projects` (with nested boards,
 tasks, task assignees, and task comments), and `notifications`.
 
 ## Stack
 
-- **Frontend:** React, TypeScript, TanStack Start, TanStack Router, Vite, Tailwind CSS
-- **Backend:** Node.js, Express.js, REST API
+- **Frontend:** React, TypeScript, TanStack Start, TanStack Router, Vite, Tailwind CSS, Socket.IO client
+- **Backend:** Node.js, Express.js, REST API, Socket.IO
 - **Database:** PostgreSQL with Prisma ORM
-- **Auth foundation (not yet wired up):** JWT, bcryptjs
-- **Real-time (planned, bonus):** Socket.IO
+- **Auth:** JWT, bcryptjs
+- **Testing:** Playwright (browser E2E) for the frontend, curl/Node integration scripts for the API
 
 ## Planned architecture
 
@@ -47,6 +46,8 @@ breakdown of the database.
 ```
 Task3/
 ├── client/          # TanStack Start + React + TypeScript frontend
+│   ├── e2e/          # Playwright browser tests (flows + responsive)
+│   └── src/
 ├── server/          # Express.js backend + Prisma
 │   ├── prisma/
 │   │   ├── schema.prisma
@@ -54,7 +55,17 @@ Task3/
 │   └── src/
 ├── docs/
 │   ├── ARCHITECTURE.md
-│   └── DATABASE_SCHEMA.md
+│   ├── DATABASE_SCHEMA.md
+│   ├── AUTHENTICATION.md
+│   ├── USER_PROFILES.md
+│   ├── PROJECTS.md
+│   ├── BOARDS.md
+│   ├── TASKS.md
+│   ├── ASSIGNMENTS.md
+│   ├── COMMENTS.md
+│   ├── NOTIFICATIONS.md
+│   ├── REALTIME.md
+│   └── FRONTEND.md
 ├── docker-compose.yml
 ├── package.json
 ├── .env.example
@@ -119,6 +130,24 @@ npm run dev:client
 - Frontend: http://localhost:5173
 - Backend health: http://localhost:5002/api/health
 - Backend + DB health: http://localhost:5002/api/health/db
+
+### 6. Frontend browser tests (optional)
+
+With both the frontend and backend already running (step 5), the
+Playwright suite drives a real browser against them:
+
+```bash
+cd client
+npx playwright install chromium   # first time only
+npx playwright test
+```
+
+`client/e2e/flows.spec.ts` covers the register→dashboard, project→board→
+task, member→assignment, comment CRUD, notification, cross-session
+realtime, and unauthorized-access flows; `client/e2e/responsive.spec.ts`
+checks every required viewport for horizontal overflow. Both register
+fresh throwaway accounts per run, so the suite is safe to re-run
+repeatedly.
 
 ## Seed data (development only)
 
@@ -573,26 +602,59 @@ Prisma row, never `passwordHash`, never a JWT.
 Socket.IO is folded into the existing graceful-shutdown sequence — closed
 before the HTTP server stops accepting new connections.
 
-**Frontend integration (a `socket.io-client` in the actual UI) is not part
-of this phase** — this is the backend/API milestone only; a temporary test
-client was used for verification and was not added as a project
-dependency.
+The frontend's own Socket.IO client (added in Phase 14.15, documented in
+[docs/FRONTEND.md](./docs/FRONTEND.md)) connects with this exact handshake,
+joins a project's room only after opening that project, and reconciles
+every event into local UI state idempotently — so the same change arriving
+twice (once from this client's own REST response, once echoed back over
+the socket) never produces a duplicate card, comment, or toast.
+
+## Frontend (Phases 13–15)
+
+A full React/TanStack Start client — API layer, authentication, routing,
+layout, every page, and a Socket.IO client — sits on top of the backend
+above with zero mock data. Full detail (architecture, routing, state
+management, realtime reconciliation, accessibility, responsive design,
+and the deliberate trade-offs forced by the backend's real shape — most
+notably that a **Board is this app's Kanban column**, since the backend
+has no `status` field and no cross-board task-move endpoint) lives in
+[docs/FRONTEND.md](./docs/FRONTEND.md).
+
+**Pages:** `/`, `/login`, `/register`, `/app/dashboard`, `/app/projects`,
+`/app/projects/:projectId` (Kanban board + members),
+`/app/projects/:projectId/boards/:boardId` (deep link into one column),
+`/profile`, `/settings` — the last four require authentication (a
+client-side guard backed by `GET /auth/me`, not just a stored token).
+
+**Testing:** a Playwright browser suite (`client/e2e/`) drives the real
+app against the real backend — register → dashboard, create project →
+board → task, add a second member → assign → verify, open task → comment
+→ edit → delete, two independent browser sessions where one's task
+creation appears live in the other's open board without a refresh, and a
+non-member's direct URL access to a private project correctly shows an
+error instead of the project. A second spec asserts zero horizontal
+overflow on every page (including the Kanban board and an open task modal)
+at six required viewport sizes from 375px to 1440px. See
+[docs/FRONTEND.md](./docs/FRONTEND.md) for what this did and didn't cover.
 
 ## Current phase
 
-Phase 0 (architecture/planning), Phase 1 (scaffolding), Phase 2 (database
-layer), Phase 3 (backend foundation), Phase 4 (authentication), Phase 5
-(user profiles), Phase 6 (projects & membership), Phase 7 (project
-boards), Phase 8 (task cards), Phase 9 (task assignment), Phase 10 (task
-comments), Phase 11 (notifications), and Phase 12 (Socket.IO real-time
-updates) are all complete. The full frontend UI — including Socket.IO
-client integration — is the only thing left, planned for subsequent
-phases.
+All 15 phases are complete: architecture/planning, scaffolding, the
+database layer, backend foundation, authentication, user profiles,
+projects & membership, project boards, task cards, task assignment, task
+comments, notifications, Socket.IO real-time updates, the full frontend
+foundation (API client, auth, routing, layout, design system), the
+complete UI (every page backed by a real endpoint, plus the Socket.IO
+client), and the UI/UX polish pass (responsive, accessible, loading/empty/
+error states, toasts, confirmations).
 
 ## Planned features
 
-- The full frontend UI: login/register, profile, project/board/task
-  screens, a Kanban board, comment threads, a notification center, and a
-  live Socket.IO client
 - Project activity timeline surfaced in the UI (the `Activity` model
-  exists in the database but nothing writes to it yet)
+  exists in the database but nothing writes to it yet — no backend
+  endpoint reads or writes it, so there is nothing for a frontend screen
+  to show)
+- A keyboard- and touch-accessible way to reorder Kanban cards (today's
+  drag-and-drop is mouse-only — see [docs/FRONTEND.md](./docs/FRONTEND.md#kanban--board-is-the-column-important))
+- Deployment/hosting configuration (explicitly out of scope for every
+  phase so far)

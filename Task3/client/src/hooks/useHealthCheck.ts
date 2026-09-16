@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { getApiHealth, getDatabaseHealth } from '../lib/api'
+import { healthApi } from '../lib/api'
 
 type CheckState = 'idle' | 'loading' | 'ok' | 'error'
 
-// Foundation-phase hook: proves the frontend can reach the Express API (and,
-// transitively, Postgres via Prisma). Superseded by real data-fetching hooks
-// once projects/boards/tasks endpoints exist.
+// Proves the frontend can reach the Express API (and, transitively,
+// Postgres via Prisma). Used as a small, honest "system status" indicator
+// on the landing page — real data, never a fabricated uptime number.
 export function useHealthCheck() {
   const [apiStatus, setApiStatus] = useState<CheckState>('idle')
   const [dbStatus, setDbStatus] = useState<CheckState>('idle')
@@ -14,7 +14,8 @@ export function useHealthCheck() {
     let cancelled = false
 
     setApiStatus('loading')
-    getApiHealth()
+    healthApi
+      .api()
       .then(() => {
         if (!cancelled) setApiStatus('ok')
       })
@@ -23,7 +24,8 @@ export function useHealthCheck() {
       })
 
     setDbStatus('loading')
-    getDatabaseHealth()
+    healthApi
+      .db()
       .then(() => {
         if (!cancelled) setDbStatus('ok')
       })

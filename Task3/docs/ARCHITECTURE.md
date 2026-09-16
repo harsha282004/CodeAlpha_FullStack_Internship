@@ -82,21 +82,52 @@ persistence details out of the HTTP layer.
 
 ## 6. Frontend architecture
 
+**Implemented (Phases 13-15) — see [FRONTEND.md](./FRONTEND.md) for full
+detail.**
+
 - **TanStack Start + TanStack Router** for file-based routing and SSR-capable
   React rendering (mirrors the pattern already used in Task2).
 - **Vite** as the dev server/bundler.
-- **Tailwind CSS** for styling.
-- Planned structure:
-  - `src/routes/` — file-based routes (pages)
-  - `src/components/` — reusable UI building blocks, later grouped by domain
-    (project, board, task, comment, notification) as those features land
-  - `src/lib/` — API client, auth context, formatting/date helpers
-  - `src/hooks/` — reusable React hooks (data fetching, debouncing, etc.)
-  - `src/styles/` — global Tailwind entry point
+- **Tailwind CSS** for styling, plus a small hand-written component layer
+  (`components/ui/`) — no third-party UI framework was introduced.
+- **Socket.IO client** (`socket.io-client`), the one new dependency added in
+  this phase, connecting with the same JWT the REST API already uses.
+- Actual structure:
+  - `src/routes/` — file-based routes: public (`/`, `/login`, `/register`)
+    plus a pathless `_authenticated/` layout (auth-guarded, wraps `AppShell`)
+    holding `/app/dashboard`, `/app/projects/*`, `/profile`, `/settings`
+  - `src/components/ui/` — design-system primitives (Button, FormField,
+    Modal, ConfirmDialog, Card, Badge, Avatar, Feedback states, toasts)
+  - `src/components/layout/`, `components/projects/`, `components/tasks/`,
+    `components/comments/` — feature components grouped by domain
+  - `src/lib/api/` — one typed module per backend resource
+    (`authApi`/`usersApi`/`projectsApi`/`boardsApi`/`tasksApi`/
+    `assigneesApi`/`commentsApi`/`notificationsApi`), all funneled through
+    one `client.ts` request/error-normalization layer
+  - `src/auth/` — `AuthContext` (login/register/logout/session-restore) +
+    `tokenStorage` (an isolated `localStorage` wrapper)
+  - `src/realtime/` — `SocketContext` (connection, project rooms,
+    `useSocketEvent` hook)
+  - `src/hooks/` — one data/mutation hook per feature area (`useProjects`,
+    `useProject`, `useKanban`, `useComments`, `useNotifications`), each
+    reconciling its own REST state with the matching realtime events
+  - `src/styles/` — global Tailwind entry point + the design system's token
+    layer (focus ring, toast/skeleton animation)
+  - `client/e2e/` — Playwright browser tests (flows + responsive checks)
 - The frontend never hardcodes application/demo data. All content is fetched
-  from the REST API, which is in turn backed by the database seed system.
-- State that must be shared across the app (current user/session) will live
-  in a React context, following the `AuthContext` pattern from Task2.
+  from the REST API, which is in turn backed by the database seed system —
+  verified directly: every list/detail screen renders an honest empty state
+  rather than a fabricated one when the backend has nothing to show.
+- Shared state (current user/session, Socket.IO connection, toasts) lives in
+  React context (`AuthContext`, `SocketContext`, `ToastContext`) — no
+  external state-management or data-fetching library was introduced; see
+  [FRONTEND.md](./FRONTEND.md#state-management-approach) for why that was a
+  deliberate choice given this app's actual size.
+- **The backend has no `status` field on `Task` and no cross-board move
+  endpoint** — a `Board` *is* this app's Kanban column. The frontend's
+  Kanban board reflects that directly rather than inventing a `status`
+  concept the API doesn't have; see
+  [FRONTEND.md](./FRONTEND.md#kanban--board-is-the-column-important).
 
 ## 7. Backend architecture
 
@@ -852,8 +883,32 @@ never an HTML error page.
 - **Build verification:** `npm run build` for both workspaces must succeed
   with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
   independently.
-- Automated test suites (integration tests per resource) are planned for
-  later phases once there are real endpoints worth testing.
+- **Phase 13-15 frontend verification:** a live Playwright browser suite
+  (`client/e2e/flows.spec.ts`) drives a real Chromium instance against the
+  real running frontend and backend — register → dashboard redirect,
+  create project → board → task, add a second member → assign a task →
+  verify the assignment, open a task → add/edit/delete a comment, and two
+  independent browser contexts (two different real accounts) where one
+  creates a task and the other's already-open Kanban board shows it
+  without a page refresh (genuine cross-session realtime, not simulated),
+  plus a non-member's direct-URL access to a private project resulting in
+  an error state rather than the project's content. A second spec
+  (`client/e2e/responsive.spec.ts`) asserts zero horizontal page overflow
+  at all six required viewports (1440×900 down to 375×812) on the public
+  pages and on the most layout-dense authenticated screen (Kanban board
+  with a task detail modal open). This suite caught and led to fixing two
+  real bugs during development: a duplicate-card/duplicate-comment race
+  where a mutation's own REST response and its Socket.IO echo could each
+  add the same new board/task/assignee to local state (fixed by making
+  every local state update idempotent by id, not only the realtime
+  handlers), and a duplicate DOM `id="modal-title"` that gave a nested
+  confirmation dialog the wrong accessible name when opened on top of
+  another modal (fixed with `useId()` — see
+  [FRONTEND.md](./FRONTEND.md) for both). A separate Node script
+  (not part of the committed test suite) exercised the REST API and raw
+  Socket.IO protocol directly against the real backend to validate the
+  frontend's own assumptions about response shapes before any UI code
+  consumed them.
 - **Known limitation:** graceful shutdown was verified by code review (a
   guarded, standard `SIGINT`/`SIGTERM` handler — see Section 12/18), not by
   an interactive `Ctrl+C`. Delivering a real POSIX signal to a background
@@ -961,25 +1016,66 @@ never an HTML error page.
   Folded into the existing graceful-shutdown sequence. `socket.io` was
   already a package.json dependency since Phase 1 scaffolding — no new
   dependency was added. No frontend Socket.IO client, no schema change.
-- **Phase 13+ (not started)** — the full frontend UI (dashboard, Kanban
-  board, task detail view, comment thread, notification center, a live
-  Socket.IO client, login/register/project/board screens).
+- **Phase 13** — frontend foundation: the typed API client
+  (`lib/api/*`, one module per resource), `AuthContext` (login/register/
+  logout/session-restore against `GET /auth/me`, never a self-issued JWT),
+  a `localStorage` token wrapper, protected file-based routing (a pathless
+  `_authenticated` layout guard), `AppShell`/`Sidebar`/`Header`, and the
+  `components/ui/` design system (Button, FormField, Modal, ConfirmDialog,
+  Card, Badge, Avatar, Feedback states). No backend change.
+- **Phase 14** — the complete UI: login/register, dashboard (real counts
+  only, no fabricated metrics), projects list + create, project detail
+  (edit/delete by role, tabs for board/members), member management (real
+  user search, add/remove/role-change), the Kanban board (`KanbanBoard`/
+  `BoardColumn`/`TaskCard`, one Board per column, same-column
+  drag-reorder only — no cross-board move exists in the backend), task
+  create/detail/edit/delete, assignee management, threaded comments
+  (author-only edit, author-or-moderator delete, matching Phase 10
+  exactly), the notification bell (real `NotificationType`s only), profile/
+  settings, and the Socket.IO client (`realtime/SocketContext.tsx`) that
+  patches Kanban/comment/notification state live and idempotently. No
+  backend change.
+- **Phase 15** — UI/UX polish: responsive layout verified at six required
+  viewports (no horizontal overflow, objectively checked via Playwright,
+  not just eyeballed), accessibility (labeled fields, focus-trapped/
+  Escape-closing modals with a unique id per instance, `aria-live` toasts,
+  icon-button `aria-label`s), priority/status visuals (label + icon +
+  color, never color alone), micro-interactions, consistent confirmation
+  dialogs for every destructive action, a de-duplicating toast system, and
+  idempotent realtime reconciliation so a REST response and its own socket
+  echo never double-apply. A live Playwright browser suite
+  (`client/e2e/flows.spec.ts`, `responsive.spec.ts`) exercises the app
+  against the real running backend; see
+  [FRONTEND.md](./FRONTEND.md) for exactly what it covers.
 
 ## 23. Data flow
 
-Example: a user moves a task to a different board.
+Example, as actually implemented: a user reorders a task within its board
+(the only kind of "move" this app supports — see Section 12 and
+[TASKS.md](./TASKS.md) for why there's no cross-board move).
 
-1. Browser sends `PATCH /api/tasks/:id/move` with the new `boardId`/`position`.
-2. Express routes it to `tasks.controller.moveTask`.
-3. The controller calls `taskService.moveTask(userId, taskId, payload)`.
-4. The service verifies the caller is a member of the task's project,
-   updates the `Task` row via Prisma, writes an `Activity` row
-   (`TASK_MOVED`), and (later phase) creates `Notification` rows for
-   relevant users and emits a Socket.IO event.
-5. Prisma commits to PostgreSQL — the single source of truth.
-6. The HTTP response returns the updated task; connected clients in the
-   project's Socket.IO room receive a `task:moved` event and reconcile
-   their local state.
+1. The frontend's `useKanban` hook (`client/src/hooks/useKanban.ts`) calls
+   `PATCH /api/projects/:projectId/boards/:boardId/tasks/:taskId` with the
+   new `position` — the URL's `:boardId` never changes, since the backend
+   has no field for that.
+2. Express routes it through `requireAuth` → `requireProjectMember` →
+   `requireBoardInProject` → `requireTaskInBoard` (via the nested router
+   mounts) to `task.controller.updateTaskController`.
+3. The controller calls `task.service.js`'s `updateTask(boardId, taskId,
+   actorId, update)`.
+4. The service updates the `Task` row via Prisma, diffs the result against
+   the pre-update snapshot to detect a genuine `position` change, emits
+   `task:moved` to the project's Socket.IO room, and creates a
+   `TASK_MOVED` `Notification` row for each assignee other than the actor
+   (see [NOTIFICATIONS.md](./NOTIFICATIONS.md)). No `Activity` row is
+   written — that model exists in the schema but nothing reads or writes
+   it in any phase so far.
+5. Prisma commits to PostgreSQL — the single source of truth — before any
+   of the above emission happens.
+6. The HTTP response returns the updated task to the caller; every other
+   connected client already in that project's Socket.IO room receives the
+   `task:moved` event and reconciles it into local state idempotently
+   (see [FRONTEND.md](./FRONTEND.md)), without a page refresh.
 
 ## 24. Important design decisions
 
@@ -1258,3 +1354,39 @@ Example: a user moves a task to a different board.
   chain ever runs for that path), so there is no single piece of code to
   share; what's shared is the *value* they're both configured with
   (`env.clientUrl`), which is what "consistent" means here.
+- **The protected-route auth guard runs inside the React component, not in
+  TanStack Router's `beforeLoad`** — `beforeLoad` also executes during
+  SSR, where there is no `localStorage` token to read yet; a guard there
+  would either crash server-side or redirect every legitimately
+  authenticated visitor on their very first request, before the client had
+  a chance to confirm the session. Rendering a harmless loading state
+  server-side and letting the client-side `AuthContext` decide once it has
+  actually called `GET /auth/me` avoids that false negative entirely.
+- **A `Board` is this app's Kanban column — the frontend does not invent a
+  `status` concept the backend doesn't have.** This was a real constraint
+  discovered by reading `task.validator.js` (which explicitly rejects a
+  `status` field with an explanatory message) and `task.service.js`'s
+  `updateTask` (which can change a task's `position` but never its
+  `boardId`), not a simplification chosen for convenience. Drag-and-drop
+  therefore only reorders within one column; dropping a task onto a
+  different column is a deliberate no-op rather than a fabricated
+  "success" for an operation the API can't perform.
+- **Every local-state mutation is idempotent by id — the REST-response
+  update *and* the realtime-event update, not just the latter.** The
+  backend emits its Socket.IO event immediately after its own Prisma write
+  commits, which is *before* the HTTP response is necessarily received by
+  the same browser tab that triggered it — so a client that's also in the
+  project's room can see its own action's realtime echo arrive before its
+  own `fetch()` promise resolves. Playwright's browser suite caught this
+  directly (a real duplicate board/task appeared under load), which is
+  what turned "the realtime handlers should be idempotent" into "every
+  state-updating code path must independently check-before-append,
+  because either one might run second."
+- **No global state-management or data-fetching library** (Redux, Zustand,
+  React Query, etc.) — one hook per feature area, each owning its own
+  `useState` plus a `load()`/mutation pattern. Given this app's actual
+  size, such a library would be solving a cache-consistency problem this
+  app doesn't have, at the cost of a dependency and an abstraction layer.
+  Reconciliation with realtime events is handled the same explicit,
+  auditable way (see the point above), not through automatic
+  cache invalidation.

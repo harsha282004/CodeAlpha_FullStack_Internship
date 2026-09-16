@@ -1,8 +1,83 @@
 @import "tailwindcss";
 
-/* Minimal foundation only — the full TaskFlow design system is built out
-   alongside the real UI in a later phase. */
+/* TaskFlow design system: a small, deliberate set of tokens and primitives
+   layered on top of Tailwind's utilities — not a competing framework. Every
+   color/spacing/radius decision lives here or in components/ui/*, so the
+   rest of the app composes from one consistent vocabulary. */
+
+:root {
+  color-scheme: light;
+  --tf-focus-ring: 79 70 229; /* indigo-600, used for focus-visible rings */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+  }
+}
 
 body {
   @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+/* A single, consistent focus style for every interactive element in the
+   app — keyboard users always get a visible ring, mouse users never see
+   one from a click (focus-visible, not focus). */
+:focus-visible {
+  outline: 2px solid rgb(var(--tf-focus-ring));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Toast entrance — a single, tasteful transition instead of a whole
+   animation library. Respects reduced-motion. */
+@keyframes tf-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.toast-enter {
+  animation: tf-toast-in 180ms ease-out;
+}
+
+/* Skeleton shimmer for loading states. */
+@keyframes tf-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.tf-skeleton {
+  background-image: linear-gradient(90deg, #e2e8f0 25%, #eef2f7 37%, #e2e8f0 63%);
+  background-size: 200% 100%;
+  animation: tf-shimmer 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-enter,
+  .tf-skeleton {
+    animation: none;
+  }
+}
+
+/* Thin, unobtrusive scrollbar for Kanban columns — cosmetic only, never
+   load-bearing for functionality (a plain scrollbar works identically). */
+.tf-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+.tf-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.tf-scroll::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 9999px;
 }
