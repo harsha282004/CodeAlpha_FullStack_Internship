@@ -16,7 +16,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <Header onMenuClick={() => setMobileNavOpen(true)} />
 
       <div className="flex flex-1">
-        <aside className="hidden w-56 shrink-0 border-r border-slate-200 bg-white lg:block">
+        <aside className="hidden w-[260px] shrink-0 border-r border-slate-200 bg-white lg:block">
           <Sidebar />
         </aside>
 
@@ -27,9 +27,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               onClick={() => setMobileNavOpen(false)}
               aria-hidden="true"
             />
-            <div className="absolute inset-y-0 left-0 w-64 max-w-[80vw] bg-white shadow-xl">
-              <div className="flex h-14 items-center justify-between border-b border-slate-200 px-4">
-                <span className="text-base font-bold text-slate-900">TaskFlow</span>
+            <div className="absolute inset-y-0 left-0 w-[260px] max-w-[80vw] bg-white shadow-xl">
+              <div className="flex h-[76px] items-center justify-between border-b border-slate-200 px-4">
+                <span className="text-lg font-extrabold tracking-tight text-slate-900">TaskFlow</span>
                 <button
                   type="button"
                   onClick={() => setMobileNavOpen(false)}
@@ -46,7 +46,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         )}
 
-        <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</main>
+        <main className="min-w-0 flex-1 px-4 py-8 sm:px-6 lg:px-10">{children}</main>
       </div>
     </div>
   )

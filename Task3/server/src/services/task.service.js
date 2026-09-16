@@ -3,6 +3,7 @@ import { AppError } from '../utils/AppError.js'
 import { toTaskSummary } from '../utils/task.js'
 import { createNotifications } from './notification.service.js'
 import { emitToProject } from '../realtime/socket.js'
+import { getBoardWithinProject } from './board.service.js'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -132,29 +133,57 @@ const CONTENT_FIELDS = ['title', 'description', 'priority', 'dueDate']
 export async function updateTask(boardId, taskId, actorId, update) {
   const before = await getTaskWithinBoard(boardId, taskId)
 
+  const data = { ...update }
+
+  // Moving a task to a different board is this project's equivalent of a
+  // Kanban drag between columns — a Board *is* the column (see
+  // task.validator.js), so this is a real, guarded write to a real column,
+  // never a fabricated "status" concept. The target board is re-verified
+  // fresh from the database against this task's own (already-trusted)
+  // projectId — never the client's say-so — so a task can never be moved
+  // into a board belonging to a different project; an attempt is treated
+  // identically to a nonexistent board (404), the same convention every
+  // other cross-project access in this app already uses.
+  const boardChanging = 'boardId' in update && update.boardId !== before.boardId
+  if (boardChanging) {
+    await getBoardWithinProject(before.projectId, update.boardId)
+    // No explicit position supplied alongside the move — append to the end
+    // of the destination board rather than colliding with whatever's
+    // already at position 0 there.
+    if (!('position' in update)) {
+      data.position = await nextPosition(update.boardId)
+    }
+  }
+
   const task = await prisma.task.update({
     where: { id: taskId },
-    data: update,
+    data,
     select: TASK_SELECT,
   })
   const safe = toTaskSummary(task)
 
-  // Position is this project's only concept of "moved" (see TASKS.md — a
-  // cross-board move endpoint doesn't exist in this phase); everything
-  // else is a content update. Both are computed against the pre-update
-  // snapshot, not just "was the field present in the request body," so
-  // resending an unchanged value is correctly treated as a no-op.
-  const moved = 'position' in update && valuesDiffer(update.position, before.position)
+  // "Moved" covers both a same-board reorder (position changes) and a
+  // cross-board move (boardId changes) — either is this project's only
+  // concept of a task's workflow stage changing. Both are computed against
+  // the pre-update snapshot, not just "was the field present in the
+  // request body," so resending an unchanged value is correctly treated as
+  // a no-op.
+  const movedWithinBoard = 'position' in update && valuesDiffer(update.position, before.position)
+  const moved = boardChanging || movedWithinBoard
   const contentChanged = CONTENT_FIELDS.some((field) => field in update && valuesDiffer(update[field], before[field]))
 
   // Real-time events reach everyone watching the project board, regardless
   // of assignment — assignment only narrows who gets a *notification*,
-  // handled separately below.
+  // handled separately below. `task.boardId` (the post-update value) is
+  // used here rather than the URL's original `boardId`, since after a
+  // cross-board move the event needs to describe where the task actually
+  // ended up, not where it started — the frontend's own realtime handler
+  // already keys off `task.boardId` for exactly this reason.
   if (moved) {
-    emitToProject(task.projectId, 'task:moved', { projectId: task.projectId, boardId, task: safe })
+    emitToProject(task.projectId, 'task:moved', { projectId: task.projectId, boardId: task.boardId, task: safe })
   }
   if (contentChanged) {
-    emitToProject(task.projectId, 'task:updated', { projectId: task.projectId, boardId, task: safe })
+    emitToProject(task.projectId, 'task:updated', { projectId: task.projectId, boardId: task.boardId, task: safe })
   }
 
   if (moved || contentChanged) {

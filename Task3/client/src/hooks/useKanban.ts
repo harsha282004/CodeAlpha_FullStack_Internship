@@ -246,10 +246,9 @@ export function useKanban(projectId: string) {
     [projectId, show],
   )
 
-  // Reorders tasks within a single column (cross-column drag isn't
-  // supported — the backend has no way to move a task to a different
-  // board; see lib/api/tasks.ts). Only PATCHes the tasks whose position
-  // actually changed, not every task in the column.
+  // Reorders tasks within a single column (moving a task to a *different*
+  // column is moveTaskToBoard, below). Only PATCHes the tasks whose
+  // position actually changed, not every task in the column.
   const reorderWithinColumn = useCallback(
     async (boardId: string, fromIndex: number, toIndex: number) => {
       const column = columns.find((c) => c.board.id === boardId)
@@ -277,6 +276,66 @@ export function useKanban(projectId: string) {
         )
       } catch (err) {
         show(err instanceof ApiError ? err.message : 'Could not save the new order.', 'error')
+        load()
+      }
+    },
+    [columns, projectId, show, load],
+  )
+
+  // Moves a task to a different board — this app's "drag to another
+  // column" operation, now that the backend supports changing a task's
+  // boardId (see lib/api/tasks.ts). Follows the exact same optimistic-then-
+  // rollback shape as reorderWithinColumn above: local state updates
+  // immediately (so the drag feels instant), every task whose position
+  // actually changed in either column is persisted, and any failure rolls
+  // back via a full reload() rather than leaving the UI showing a move
+  // that didn't actually save.
+  const moveTaskToBoard = useCallback(
+    async (fromBoardId: string, taskId: string, toBoardId: string, toIndex: number) => {
+      if (fromBoardId === toBoardId) return
+
+      const fromColumn = columns.find((c) => c.board.id === fromBoardId)
+      const toColumn = columns.find((c) => c.board.id === toBoardId)
+      const task = fromColumn?.tasks.find((t) => t.id === taskId)
+      if (!fromColumn || !toColumn || !task) return
+
+      const remainingSource = fromColumn.tasks
+        .filter((t) => t.id !== taskId)
+        .map((t, i) => ({ ...t, position: i }))
+
+      const destinationWithoutMoved = toColumn.tasks.filter((t) => t.id !== taskId)
+      const insertAt = Math.max(0, Math.min(toIndex, destinationWithoutMoved.length))
+      const destinationWithMoved = [...destinationWithoutMoved]
+      destinationWithMoved.splice(insertAt, 0, { ...task, boardId: toBoardId })
+      const renumberedDestination = destinationWithMoved.map((t, i) => ({ ...t, position: i }))
+
+      setColumns((cols) =>
+        cols.map((c) => {
+          if (c.board.id === fromBoardId) return { ...c, tasks: remainingSource }
+          if (c.board.id === toBoardId) return { ...c, tasks: renumberedDestination }
+          return c
+        }),
+      )
+
+      const sourceChanges = remainingSource.filter((t) => {
+        const original = fromColumn.tasks.find((orig) => orig.id === t.id)
+        return original && original.position !== t.position
+      })
+      const destinationChanges = renumberedDestination.filter((t) => {
+        if (t.id === taskId) return false // the moved task's own PATCH (below) carries its position
+        const original = toColumn.tasks.find((orig) => orig.id === t.id)
+        return original && original.position !== t.position
+      })
+      const movedTaskPosition = renumberedDestination.find((t) => t.id === taskId)!.position
+
+      try {
+        await Promise.all([
+          tasksApi.update(projectId, fromBoardId, taskId, { boardId: toBoardId, position: movedTaskPosition }),
+          ...sourceChanges.map((t) => tasksApi.update(projectId, fromBoardId, t.id, { position: t.position })),
+          ...destinationChanges.map((t) => tasksApi.update(projectId, toBoardId, t.id, { position: t.position })),
+        ])
+      } catch (err) {
+        show(err instanceof ApiError ? err.message : 'Could not move the task. Please try again.', 'error')
         load()
       }
     },
@@ -326,6 +385,7 @@ export function useKanban(projectId: string) {
     updateTask,
     deleteTask,
     reorderWithinColumn,
+    moveTaskToBoard,
     assignUser,
     unassignUser,
   }

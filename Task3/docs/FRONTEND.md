@@ -129,37 +129,43 @@ focus ring, toast animation, and skeleton shimmer used everywhere.
 
 ## Kanban — Board is the column (important)
 
-The backend has **no `status` field on Task and no cross-board move
-endpoint** — a task's workflow stage is which `Board` it belongs to
-(`task.validator.js` explicitly rejects a `status` field with an
-explanatory message), and `PATCH .../tasks/:taskId` can change a task's
-`position` but never its `boardId` (see [TASKS.md](./TASKS.md) and
-[COMMENTS.md](./COMMENTS.md)'s sibling docs). The frontend's Kanban board
-(`components/tasks/KanbanBoard.tsx`) reflects this exactly rather than
-inventing a `status` concept the backend doesn't have:
+The backend has **no separate `status` field on Task** — a task's
+workflow stage is which `Board` it belongs to (`task.validator.js`
+explicitly rejects a `status` field with an explanatory message). Moving a
+task to a different column is therefore a real change to which `Board`
+row it belongs to (`PATCH .../tasks/:taskId` with `boardId`), the same
+guarded, real endpoint every other task update goes through — see
+[TASKS.md](./TASKS.md) for the backend side of this and the drag-and-drop
+bug-fix note below for how it was added. The frontend's Kanban board
+(`components/tasks/KanbanBoard.tsx`) reflects this model directly rather
+than inventing a `status` concept the backend doesn't have:
 
 - Each **Board is one column**. `hooks/useKanban.ts` fetches every board
   in a project plus each board's own tasks.
-- Drag-and-drop (native HTML5 DnD, no added library) **only reorders tasks
-  within a single column** — `BoardColumn.tsx`'s drop handler checks the
-  dragged task's `boardId` against the column it was dropped on and
-  silently ignores a cross-column drop rather than attempting an
-  unsupported "move to a different board," which would either be rejected
-  by the backend or require inventing a fake success.
-- Reordering PATCHes only the tasks whose position actually changed (a
-  diff against the pre-drag order), not every task in the column.
-- **Known limitation**, stated plainly rather than glossed over: there is
-  no UI to move a task to a different board/column. Adding that would
-  require a backend endpoint that doesn't exist in this phase (a `boardId`
-  field on task update, or a dedicated move route) — out of scope per this
-  milestone's "do not build features that do not exist in the backend."
+- Drag-and-drop (native HTML5 DnD, no added library) supports **both**
+  reordering within a column and moving a task to a **different** column
+  — `BoardColumn.tsx`'s drop handler checks the dragged task's `boardId`
+  against the column it was dropped on: same board → `onReorder`
+  (position only), different board → `onMoveTask`
+  (`hooks/useKanban.ts`'s `moveTaskToBoard`, which PATCHes `boardId` and
+  recomputes `position` in both the source and destination columns).
+  Dropping into an **empty** column, or into the empty space below the
+  last card, is also a real drop target (the column's own scrollable body
+  has its own `onDrop`, not just each individual card) — appends to the
+  end of that column.
+- Both operations follow the same optimistic-then-rollback shape: local
+  state updates immediately so the drag feels instant, only the tasks
+  whose position actually changed are PATCHed (not every task in the
+  column), and a failed request rolls back via a full reload rather than
+  leaving the UI showing a move that didn't actually save.
 - **Known limitation:** native HTML5 drag-and-drop has no built-in
   keyboard equivalent and does not fire reliably on touch/mobile browsers.
   On mobile, tasks can still be viewed, created, edited, assigned,
-  commented on, and deleted — just not reordered by drag. A keyboard- and
-  touch-accessible reorder control (e.g. explicit "move up/down" buttons)
-  would be a reasonable follow-up but wasn't built here to avoid adding UI
-  surface beyond what was asked for.
+  commented on, and deleted, and moved between columns via the task
+  detail view is not currently exposed either — only drag is affected. A
+  keyboard- and touch-accessible alternative (e.g. a "move to board…"
+  picker in the task detail modal) would be a reasonable follow-up but
+  wasn't built here to avoid adding UI surface beyond what was asked for.
 
 Task cards show title, description preview, priority (label **and**
 icon/color together, never color alone), due date, and assignees.

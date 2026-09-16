@@ -151,17 +151,95 @@ describe('tasks', () => {
       expect(res.status).toBe(403)
     })
 
-    it('rejects an attempt to move to a different board via boardId in the body', async () => {
+    it('moves a task to a different board in the same project via boardId, auto-assigning position at the end', async () => {
+      const owner = await registerUser()
+      const project = await createProject(owner.token)
+      const boardOne = await createBoard(owner.token, project.id, { name: 'One' })
+      const boardTwo = await createBoard(owner.token, project.id, { name: 'Two' })
+      await createTask(owner.token, project.id, boardTwo.id, { title: 'Already there' }) // position 0
+      const task = await createTask(owner.token, project.id, boardOne.id, { title: 'Moving' })
+
+      const res = await api
+        .patch(`/api/projects/${project.id}/boards/${boardOne.id}/tasks/${task.id}`)
+        .set(authHeader(owner.token))
+        .send({ boardId: boardTwo.id })
+      expect(res.status).toBe(200)
+      expect(res.body.data.task.boardId).toBe(boardTwo.id)
+      expect(res.body.data.task.position).toBe(1) // appended after the existing task at position 0
+
+      // The move is queryable through the NEW board's URL afterward...
+      const viaNewBoard = await api
+        .get(`/api/projects/${project.id}/boards/${boardTwo.id}/tasks/${task.id}`)
+        .set(authHeader(owner.token))
+      expect(viaNewBoard.status).toBe(200)
+
+      // ...and is gone from the OLD board's URL (mirrors every other
+      // task-belongs-to-its-board hierarchy check in this project).
+      const viaOldBoard = await api
+        .get(`/api/projects/${project.id}/boards/${boardOne.id}/tasks/${task.id}`)
+        .set(authHeader(owner.token))
+      expect(viaOldBoard.status).toBe(404)
+    })
+
+    it('honors an explicit position supplied alongside a board move instead of auto-appending', async () => {
       const owner = await registerUser()
       const project = await createProject(owner.token)
       const boardOne = await createBoard(owner.token, project.id, { name: 'One' })
       const boardTwo = await createBoard(owner.token, project.id, { name: 'Two' })
       const task = await createTask(owner.token, project.id, boardOne.id)
+
       const res = await api
         .patch(`/api/projects/${project.id}/boards/${boardOne.id}/tasks/${task.id}`)
         .set(authHeader(owner.token))
-        .send({ boardId: boardTwo.id })
+        .send({ boardId: boardTwo.id, position: 5 })
+      expect(res.status).toBe(200)
+      expect(res.body.data.task.position).toBe(5)
+    })
+
+    it('rejects moving a task into a board that belongs to a different project (never smuggled cross-project)', async () => {
+      const ownerA = await registerUser()
+      const ownerB = await registerUser()
+      const projectA = await createProject(ownerA.token)
+      const projectB = await createProject(ownerB.token)
+      const boardA = await createBoard(ownerA.token, projectA.id)
+      const boardB = await createBoard(ownerB.token, projectB.id)
+      const task = await createTask(ownerA.token, projectA.id, boardA.id)
+
+      const res = await api
+        .patch(`/api/projects/${projectA.id}/boards/${boardA.id}/tasks/${task.id}`)
+        .set(authHeader(ownerA.token))
+        .send({ boardId: boardB.id })
+      expect(res.status).toBe(404)
+
+      // Confirmed unmoved.
+      const stillOnA = await api
+        .get(`/api/projects/${projectA.id}/boards/${boardA.id}/tasks/${task.id}`)
+        .set(authHeader(ownerA.token))
+      expect(stillOnA.status).toBe(200)
+    })
+
+    it('rejects a boardId that is not a valid id format', async () => {
+      const owner = await registerUser()
+      const project = await createProject(owner.token)
+      const board = await createBoard(owner.token, project.id)
+      const task = await createTask(owner.token, project.id, board.id)
+      const res = await api
+        .patch(`/api/projects/${project.id}/boards/${board.id}/tasks/${task.id}`)
+        .set(authHeader(owner.token))
+        .send({ boardId: 'not-a-uuid' })
       expect(res.status).toBe(400)
+    })
+
+    it('rejects moving a task to a genuinely nonexistent board', async () => {
+      const owner = await registerUser()
+      const project = await createProject(owner.token)
+      const board = await createBoard(owner.token, project.id)
+      const task = await createTask(owner.token, project.id, board.id)
+      const res = await api
+        .patch(`/api/projects/${project.id}/boards/${board.id}/tasks/${task.id}`)
+        .set(authHeader(owner.token))
+        .send({ boardId: '11111111-1111-4111-8111-111111111111' })
+      expect(res.status).toBe(404)
     })
 
     it('rejects a negative position', async () => {

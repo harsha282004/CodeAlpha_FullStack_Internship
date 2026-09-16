@@ -9,20 +9,23 @@ interface TaskCardProps {
   assignees: Assignee[]
   onOpen: () => void
   onDragStart: (event: DragEvent<HTMLDivElement>) => void
+  onDragEnd: () => void
   onDragOver: (event: DragEvent<HTMLDivElement>) => void
   onDrop: (event: DragEvent<HTMLDivElement>) => void
   dragging: boolean
 }
 
-export function TaskCard({ task, assignees, onOpen, onDragStart, onDragOver, onDrop, dragging }: TaskCardProps) {
+export function TaskCard({ task, assignees, onOpen, onDragStart, onDragEnd, onDragOver, onDrop, dragging }: TaskCardProps) {
   const [dropHover, setDropHover] = useState(false)
 
   return (
     <div
       role="button"
       tabIndex={0}
+      data-testid={`task-card-${task.id}`}
       draggable
       onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onDragOver={(e) => {
         onDragOver(e)
         setDropHover(true)

@@ -9,16 +9,19 @@ export interface CreateTaskInput {
   dueDate?: string | null
 }
 
-// Deliberately no `boardId` field — the backend has no way to move a task
-// to a different board in this phase (see task.validator.js's comment on
-// why `status` is rejected, and task.service.js's updateTask). Only
-// `position` (reordering within the same board) can change here.
+// `boardId` moves a task to a different board — this app's equivalent of
+// dragging a Kanban card to a different column, since a Board *is* the
+// column (there's no separate status field — see task.validator.js). The
+// backend re-verifies the target board belongs to the same project on
+// every request, so this can never smuggle a task into another project's
+// board even if a caller supplied one.
 export interface UpdateTaskInput {
   title?: string
   description?: string | null
   priority?: TaskPriority
   position?: number
   dueDate?: string | null
+  boardId?: string
 }
 
 export const tasksApi = {

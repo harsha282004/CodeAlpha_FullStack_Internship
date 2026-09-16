@@ -123,10 +123,12 @@ detail.**
   external state-management or data-fetching library was introduced; see
   [FRONTEND.md](./FRONTEND.md#state-management-approach) for why that was a
   deliberate choice given this app's actual size.
-- **The backend has no `status` field on `Task` and no cross-board move
-  endpoint** — a `Board` *is* this app's Kanban column. The frontend's
-  Kanban board reflects that directly rather than inventing a `status`
-  concept the API doesn't have; see
+- **The backend has no `status` field on `Task`** — a `Board` *is* this
+  app's Kanban column, and moving a task to a different column is a real
+  change to which `Board` row it belongs to (`PATCH .../tasks/:taskId`
+  with `boardId`, added as part of the drag-and-drop bug fix — see
+  Section 22's bug-fix entry). The frontend's Kanban board reflects that
+  model directly rather than inventing a separate `status` concept; see
   [FRONTEND.md](./FRONTEND.md#kanban--board-is-the-column-important).
 
 ## 7. Backend architecture
@@ -1027,8 +1029,9 @@ never an HTML error page.
   only, no fabricated metrics), projects list + create, project detail
   (edit/delete by role, tabs for board/members), member management (real
   user search, add/remove/role-change), the Kanban board (`KanbanBoard`/
-  `BoardColumn`/`TaskCard`, one Board per column, same-column
-  drag-reorder only — no cross-board move exists in the backend), task
+  `BoardColumn`/`TaskCard`, one Board per column; at the time, same-column
+  drag-reorder only, since no cross-board move existed in the backend yet
+  — see the drag-and-drop bug-fix entry below for when that changed), task
   create/detail/edit/delete, assignee management, threaded comments
   (author-only edit, author-or-moderator delete, matching Phase 10
   exactly), the notification bell (real `NotificationType`s only), profile/
@@ -1084,31 +1087,59 @@ never an HTML error page.
   second). Deliberately does **not** write `Activity` rows, unlike the
   pre-existing development seed, since no real application code path
   generates them either — see [DEMO_DATA.md](./DEMO_DATA.md).
+- **Bug fix — cross-column drag-and-drop:** dragging a task to a different
+  Kanban column was previously a silent, documented no-op (the frontend
+  correctly detected a cross-board drop and deliberately ignored it, since
+  `PATCH .../tasks/:taskId` had no way to change `boardId`). Diagnosed as
+  a genuine backend capability gap rather than a frontend event-handling
+  bug, confirmed by direct inspection (`task.validator.js`'s
+  `UPDATABLE_FIELDS` had no `boardId`) before any code changed. Fixed with
+  a small, guarded backend addition — `boardId` is now updatable on the
+  existing task-update endpoint, with the target board re-verified
+  server-side to belong to the same project (`board.service.js`'s
+  existing `getBoardWithinProject`, reused rather than duplicated), so a
+  task can never be moved into another project's board even by a
+  malicious client. No Prisma/schema change was needed (`Task.boardId`
+  already existed). The frontend gained `hooks/useKanban.ts`'s
+  `moveTaskToBoard` (same optimistic-update-then-rollback shape as the
+  pre-existing same-column reorder) and a real drop target on each
+  column's own body (not just its individual cards), fixing a second,
+  related gap where an empty destination column had no drop target at
+  all. See [FRONTEND.md](./FRONTEND.md#kanban--board-is-the-column-important).
 
 ## 23. Data flow
 
-Example, as actually implemented: a user reorders a task within its board
-(the only kind of "move" this app supports — see Section 12 and
-[TASKS.md](./TASKS.md) for why there's no cross-board move).
+Example, as actually implemented: a user drags a task from one Kanban
+column to another (a real move to a different `Board` row — see
+Section 12 and [TASKS.md](./TASKS.md)).
 
-1. The frontend's `useKanban` hook (`client/src/hooks/useKanban.ts`) calls
-   `PATCH /api/projects/:projectId/boards/:boardId/tasks/:taskId` with the
-   new `position` — the URL's `:boardId` never changes, since the backend
-   has no field for that.
+1. The frontend's `useKanban` hook (`client/src/hooks/useKanban.ts`)
+   applies the move to local state immediately (optimistic UI), then calls
+   `PATCH /api/projects/:projectId/boards/:sourceBoardId/tasks/:taskId`
+   with `{ boardId: <destination board id>, position: <index> }` — the
+   URL's `:boardId` is still the task's board *before* the move (the
+   hierarchy check needs to find it there); the new board is only ever
+   named in the body.
 2. Express routes it through `requireAuth` → `requireProjectMember` →
    `requireBoardInProject` → `requireTaskInBoard` (via the nested router
    mounts) to `task.controller.updateTaskController`.
 3. The controller calls `task.service.js`'s `updateTask(boardId, taskId,
    actorId, update)`.
-4. The service updates the `Task` row via Prisma, diffs the result against
-   the pre-update snapshot to detect a genuine `position` change, emits
-   `task:moved` to the project's Socket.IO room, and creates a
+4. The service re-verifies the destination board belongs to the *same*
+   project (`board.service.js`'s `getBoardWithinProject` — a task can
+   never be moved into another project's board even if a client supplies
+   one), updates the `Task` row via Prisma, diffs the result against the
+   pre-update snapshot to detect a genuine `boardId` or `position` change,
+   emits `task:moved` to the project's Socket.IO room, and creates a
    `TASK_MOVED` `Notification` row for each assignee other than the actor
    (see [NOTIFICATIONS.md](./NOTIFICATIONS.md)). No `Activity` row is
    written — that model exists in the schema but nothing reads or writes
    it in any phase so far.
 5. Prisma commits to PostgreSQL — the single source of truth — before any
-   of the above emission happens.
+   of the above emission happens. If the request fails instead (e.g. the
+   destination board doesn't exist), the frontend's optimistic update from
+   step 1 is rolled back via a full reload, never left showing a move that
+   didn't actually save.
 6. The HTTP response returns the updated task to the caller; every other
    connected client already in that project's Socket.IO room receives the
    `task:moved` event and reconciles it into local state idempotently

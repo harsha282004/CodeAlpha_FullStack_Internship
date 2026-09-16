@@ -35,6 +35,7 @@ export function KanbanBoard({ projectId, members, currentUserId, currentUserRole
     updateTask,
     deleteTask,
     reorderWithinColumn,
+    moveTaskToBoard,
     assignUser,
     unassignUser,
   } = useKanban(projectId)
@@ -101,6 +102,7 @@ export function KanbanBoard({ projectId, members, currentUserId, currentUserRole
               onRename={() => setRenamingBoardId(column.board.id)}
               onDelete={() => setDeletingBoardId(column.board.id)}
               onReorder={(from, to) => reorderWithinColumn(column.board.id, from, to)}
+              onMoveTask={(fromBoardId, taskId, toIndex) => moveTaskToBoard(fromBoardId, taskId, column.board.id, toIndex)}
             />
           ))}
         </div>

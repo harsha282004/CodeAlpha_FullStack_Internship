@@ -3,6 +3,8 @@ import { AppError } from '../utils/AppError.js'
 const TITLE_MAX_LENGTH = 200
 const DESCRIPTION_MAX_LENGTH = 2000
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 // The Task model has no `status` field or enum — a task's workflow stage
 // is represented by which Board it's on (board names are free-text
 // per-project data, e.g. "To Do"/"In Progress"/"Done", by design — see
@@ -12,12 +14,18 @@ const DESCRIPTION_MAX_LENGTH = 2000
 // clear explanation instead of a generic "unsupported field."
 const TASK_PRIORITIES = new Set(['LOW', 'MEDIUM', 'HIGH', 'URGENT'])
 
-// Whitelisting is also what makes id/projectId/boardId/createdById/
-// createdAt/updatedAt all rejected the same way — there is no separate
-// blocklist to keep in sync. The parent project/board always come from
-// the URL, never a body field.
+// Whitelisting is also what makes id/projectId/createdById/createdAt/
+// updatedAt all rejected the same way on update — there is no separate
+// blocklist to keep in sync. The parent project always comes from the
+// URL, never a body field, on create. `boardId` is deliberately NOT
+// creatable (a task is always created on the board named in the URL) but
+// IS updatable — that's how a task actually moves to a different board
+// (this project's "move a card between columns" operation); the target
+// board is still verified server-side to belong to the same project (see
+// task.service.js's updateTask), so this can never be used to smuggle a
+// task into another project.
 const CREATABLE_FIELDS = new Set(['title', 'description', 'priority', 'position', 'dueDate'])
-const UPDATABLE_FIELDS = new Set(['title', 'description', 'priority', 'position', 'dueDate'])
+const UPDATABLE_FIELDS = new Set(['title', 'description', 'priority', 'position', 'dueDate', 'boardId'])
 
 const DEFAULT_PAGE = 1
 const DEFAULT_LIMIT = 20
@@ -164,6 +172,13 @@ export function validateUpdateTaskInput(body = {}) {
 
   if ('dueDate' in body) {
     update.dueDate = validateDueDate(body.dueDate)
+  }
+
+  if ('boardId' in body) {
+    if (typeof body.boardId !== 'string' || !UUID_REGEX.test(body.boardId)) {
+      fail('boardId must be a valid board id')
+    }
+    update.boardId = body.boardId
   }
 
   return update

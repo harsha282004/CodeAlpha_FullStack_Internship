@@ -13,14 +13,25 @@ import { ErrorState, PageSpinner } from '../../../../../components/ui/Feedback'
 import { ApiError } from '../../../../../lib/api'
 import { useToast } from '../../../../../components/ui/ToastContext'
 
+interface ProjectDetailSearch {
+  tab?: 'board' | 'members'
+}
+
 export const Route = createFileRoute('/_authenticated/app/projects/$projectId/')({
   component: ProjectDetailPage,
+  // Lets other screens (e.g. the dashboard's "Invite member" quick action)
+  // deep-link straight to the Members tab via ?tab=members instead of
+  // landing on the board and making the user click over themselves.
+  validateSearch: (search: Record<string, unknown>): ProjectDetailSearch => ({
+    tab: search.tab === 'members' ? 'members' : 'board',
+  }),
 })
 
 const canEditProject = (role?: string) => role === 'OWNER' || role === 'ADMIN'
 
 function ProjectDetailPage() {
   const { projectId } = Route.useParams()
+  const { tab: initialTab } = Route.useSearch()
   const { user } = useAuth()
   const navigate = useNavigate()
   const { show } = useToast()
@@ -37,7 +48,7 @@ function ProjectDetailPage() {
     changeMemberRole,
   } = useProject(projectId)
 
-  const [tab, setTab] = useState<'board' | 'members'>('board')
+  const [tab, setTab] = useState<'board' | 'members'>(initialTab ?? 'board')
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')

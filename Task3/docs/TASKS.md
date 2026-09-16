@@ -185,14 +185,53 @@ already guaranteed by the time any task code runs.
 | `priority` | optional (defaults to `MEDIUM`) | optional | one of `LOW`, `MEDIUM`, `HIGH`, `URGENT` (the existing `TaskPriority` enum, unchanged) |
 | `position` | optional (auto-assigned if omitted) | optional | non-negative integer |
 | `dueDate` | optional | optional | ISO 8601 date string, or explicit `null` to clear |
+| `boardId` | — (not creatable) | optional | a valid board id **belonging to the same project** — see "Moving a task to a different board" below |
 
-Any other field — `id`, `projectId`, `boardId`, `createdById`, `createdAt`,
+Any other field — `id`, `projectId`, `createdById`, `createdAt`,
 `updatedAt`, `status` (see above), or anything not in this list — is
-rejected with `400`, the same as an empty update body. The parent
-project/board always come from the URL, never the request body: accepting
-a `boardId` field would let a client try to point a task at a different
-board than the one in the URL, which the whitelist makes structurally
-impossible.
+rejected with `400`, the same as an empty update body. `projectId` always
+comes from the URL, never the request body, on both create and update.
+`boardId` is deliberately **not** creatable (a task is always created on
+the board named in the URL) but **is** updatable, as of the drag-and-drop
+bug fix described next.
+
+## Moving a task to a different board
+
+A task's workflow stage is which `Board` it's on (see
+[the note above](#a-deliberate-non-change-no-status-field)), so moving a
+task between Kanban columns means changing its `boardId` — a real,
+guarded write through this same `PATCH` endpoint, not a separate "move"
+route or a fabricated status system:
+
+```json
+PATCH /api/projects/:projectId/boards/:boardId/tasks/:taskId
+{ "boardId": "<a different board's id>" }
+```
+
+The URL's `:boardId` is still the task's **current** board (needed for
+the hierarchy check to find it there); the **destination** board is named
+in the body. `task.service.js`'s `updateTask` re-verifies the destination
+board fresh from the database — via `board.service.js`'s own
+`getBoardWithinProject`, reused rather than duplicated — and confirms it
+belongs to the **same project** as the task being moved. A destination
+board from a different project (or a nonexistent one) is rejected `404`,
+identical to every other cross-project access attempt in this app; it is
+never possible to smuggle a task into another project's board, even by a
+client that knows a real board id.
+
+If `position` isn't supplied alongside `boardId`, the task is appended to
+the end of the destination board (the same `nextPosition` helper used on
+create, just scoped to the new board) rather than colliding with whatever
+is already at position `0` there. Moving a task counts as "moved" the
+same way a `position`-only change does — see
+[Notifications](#notifications-generated) — emitting `task:moved` and a
+`TASK_MOVED` notification to the task's other assignees.
+
+This was added specifically to fix a frontend drag-and-drop bug: dragging
+a task to a different column previously had no way to persist, since this
+endpoint didn't accept `boardId` at all. See
+[FRONTEND.md](./FRONTEND.md#kanban--board-is-the-column-important) for the
+frontend side.
 
 ## Position / ordering
 
@@ -276,9 +315,15 @@ No stack traces, no Prisma internals, no database details in any response.
   directly during testing.
 - **No role is ever trusted from the client** — same discipline as
   Phases 6/7, reused rather than reimplemented.
-- **`boardId`/`projectId`/`createdById` cannot be supplied in a request
-  body** — the parent hierarchy comes from the URL, the creator from the
-  verified JWT; neither is ever read from client input.
+- **`projectId`/`createdById` can never be supplied in a request body, on
+  either create or update** — the parent project comes from the URL, the
+  creator from the verified JWT; neither is ever read from client input.
+  **`boardId` cannot be supplied on create** (a task is always created on
+  the board named in the URL) but **can** be supplied on update, to move
+  the task to a different board — the one deliberate exception, and it is
+  re-verified server-side to belong to the same project before the move
+  is allowed (see "Moving a task to a different board" above), so it can
+  never be used to reach across projects.
 - **Logging:** the request logger records method/path/status/duration
   only. Nothing in this module logs a password, a JWT, a connection
   string, or a request body.
@@ -315,6 +360,16 @@ project with its own board:
   (`createdById`) → `400`; **update of task A1 through board A2** → `404`;
   **update of task A1 through Project B** → `404` (task left untouched in
   both cases).
+- **Moving a task to a different board (`boardId` on update):** moving to
+  a board in the *same* project → `200`, task's `boardId` reflects the
+  destination and its `position` auto-assigned to the end (confirmed by
+  seeding the destination board with an existing task at position `0`
+  first); an explicit `position` supplied alongside the move is honored
+  instead of auto-appending; afterward, the task is reachable through the
+  *new* board's URL (`200`) and no longer through the *old* one (`404`);
+  moving to a board belonging to a **different** project → `404` (task
+  confirmed unmoved); a malformed or genuinely nonexistent `boardId` →
+  `400`/`404` respectively.
 - **Delete:** MEMBER → `403`; non-member → `403`; **delete of task A1
   through board A2** → `404`; **delete of task A1 through Project B** →
   `404` (task confirmed still present); ADMIN successfully deletes a task,

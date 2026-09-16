@@ -15,15 +15,35 @@ interface BoardColumnProps {
   onRename: () => void
   onDelete: () => void
   onReorder: (fromIndex: number, toIndex: number) => void
+  onMoveTask: (fromBoardId: string, taskId: string, toIndex: number) => void
 }
 
 const canManageBoards = (role: ProjectRole) => role === 'OWNER' || role === 'ADMIN'
 
+interface DragPayload {
+  index: number
+  boardId: string
+  taskId: string
+}
+
+function readDragPayload(event: DragEvent): DragPayload | null {
+  try {
+    const data = JSON.parse(event.dataTransfer.getData('text/plain'))
+    if (typeof data?.taskId === 'string' && typeof data?.boardId === 'string' && typeof data?.index === 'number') {
+      return data
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 // A single Kanban column — literally one Board (see docs/FRONTEND.md's
-// "Board is the column" note). Drag-and-drop only ever reorders within
-// this column: dropping a task dragged from a different column is a
-// deliberate no-op, since the backend has no way to move a task to a
-// different board (task.validator.js's UPDATABLE_FIELDS has no boardId).
+// "Board is the column" note). Dropping a task here either reorders it
+// within this same column (onReorder) or, if it was dragged from a
+// different column, moves it to this board entirely (onMoveTask) — a real
+// change to which Board row the task belongs to, backed by the task
+// update API (see hooks/useKanban.ts's moveTaskToBoard).
 export function BoardColumn({
   column,
   assigneesByTask,
@@ -34,41 +54,69 @@ export function BoardColumn({
   onRename,
   onDelete,
   onReorder,
+  onMoveTask,
 }: BoardColumnProps) {
-  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dragTaskId, setDragTaskId] = useState<string | null>(null)
+  const [columnDropHover, setColumnDropHover] = useState(false)
   const { board, tasks } = column
 
-  function handleDragStart(index: number, taskBoardId: string) {
+  function handleDragStart(index: number, task: Task) {
     return (event: DragEvent<HTMLDivElement>) => {
-      event.dataTransfer.setData('text/plain', JSON.stringify({ index, boardId: taskBoardId }))
+      event.dataTransfer.setData(
+        'text/plain',
+        JSON.stringify({ index, boardId: task.boardId, taskId: task.id } satisfies DragPayload),
+      )
       event.dataTransfer.effectAllowed = 'move'
-      setDragIndex(index)
+      setDragTaskId(task.id)
     }
+  }
+
+  function handleDragEnd() {
+    setDragTaskId(null)
+    setColumnDropHover(false)
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
   }
 
-  function handleDrop(dropIndex: number) {
+  // Dropping directly on a card reorders/moves to that card's exact index.
+  function handleCardDrop(dropIndex: number) {
     return (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault()
-      setDragIndex(null)
-      let data: { index: number; boardId: string }
-      try {
-        data = JSON.parse(event.dataTransfer.getData('text/plain'))
-      } catch {
-        return
+      event.stopPropagation() // don't also let the column container's own onDrop (below) fire for this same drop
+      setColumnDropHover(false)
+      const data = readDragPayload(event)
+      if (!data) return
+      if (data.boardId === board.id) {
+        onReorder(data.index, dropIndex)
+      } else {
+        onMoveTask(data.boardId, data.taskId, dropIndex)
       }
-      if (data.boardId !== board.id) return // cross-column drop: unsupported, ignored
-      onReorder(data.index, dropIndex)
+    }
+  }
+
+  // Dropping anywhere else in the column (empty space below the last card,
+  // or an empty column entirely) appends to the end — without this, an
+  // empty destination column has no drop target at all, since there are no
+  // cards to attach a drop handler to.
+  function handleColumnDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    setColumnDropHover(false)
+    const data = readDragPayload(event)
+    if (!data) return
+    if (data.boardId === board.id) {
+      if (data.index !== tasks.length - 1) onReorder(data.index, tasks.length - 1)
+    } else {
+      onMoveTask(data.boardId, data.taskId, tasks.length)
     }
   }
 
   return (
     <section
-      className={`flex w-72 shrink-0 flex-col rounded-xl border bg-slate-100/70 ${
-        highlighted ? 'border-indigo-400 ring-2 ring-indigo-100' : 'border-slate-200'
+      className={`flex w-72 shrink-0 flex-col rounded-xl border bg-slate-100/70 transition-colors ${
+        highlighted ? 'border-indigo-400 ring-2 ring-indigo-100' : columnDropHover ? 'border-indigo-400' : 'border-slate-200'
       }`}
       aria-label={`${board.name} column`}
     >
@@ -106,22 +154,40 @@ export function BoardColumn({
         )}
       </header>
 
-      <div className="tf-scroll flex-1 space-y-2 overflow-y-auto px-3 pb-2" style={{ maxHeight: '65vh' }}>
+      <div
+        className="tf-scroll flex-1 space-y-2 overflow-y-auto px-3 pb-2"
+        data-testid={`column-body-${board.id}`}
+        style={{ maxHeight: '65vh' }}
+        onDragOver={(event) => {
+          handleDragOver(event)
+          setColumnDropHover(true)
+        }}
+        onDragLeave={(event) => {
+          // Only clear the highlight once the pointer actually leaves the
+          // column container, not when it moves between child elements
+          // inside it (each of which also fires dragleave/dragenter).
+          if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+            setColumnDropHover(false)
+          }
+        }}
+        onDrop={handleColumnDrop}
+      >
         {tasks.map((task, index) => (
           <TaskCard
             key={task.id}
             task={task}
             assignees={assigneesByTask[task.id] ?? []}
-            dragging={dragIndex === index}
+            dragging={dragTaskId === task.id}
             onOpen={() => onOpenTask(task)}
-            onDragStart={handleDragStart(index, task.boardId)}
+            onDragStart={handleDragStart(index, task)}
+            onDragEnd={handleDragEnd}
             onDragOver={handleDragOver}
-            onDrop={handleDrop(index)}
+            onDrop={handleCardDrop(index)}
           />
         ))}
         {tasks.length === 0 && (
           <p className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-xs text-slate-400">
-            No tasks yet.
+            No tasks yet — drag one here, or add a new task below.
           </p>
         )}
       </div>

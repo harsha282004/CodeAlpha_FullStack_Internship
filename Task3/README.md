@@ -646,7 +646,9 @@ above with zero mock data. Full detail (architecture, routing, state
 management, realtime reconciliation, accessibility, responsive design,
 and the deliberate trade-offs forced by the backend's real shape — most
 notably that a **Board is this app's Kanban column**, since the backend
-has no `status` field and no cross-board task-move endpoint) lives in
+has no separate `status` field: moving a task between columns is a real
+`boardId` change on the same task-update endpoint, guarded so a task can
+never move into another project's board) lives in
 [docs/FRONTEND.md](./docs/FRONTEND.md).
 
 **Pages:** `/`, `/login`, `/register`, `/app/dashboard`, `/app/projects`,
@@ -665,6 +667,16 @@ error instead of the project. A second spec asserts zero horizontal
 overflow on every page (including the Kanban board and an open task modal)
 at six required viewport sizes from 375px to 1440px. See
 [docs/FRONTEND.md](./docs/FRONTEND.md) for what this did and didn't cover.
+
+**Bug fix — drag a task to a different column:** dragging a task between
+Kanban columns now actually moves it (previously a documented no-op,
+since the backend had no way to change a task's board). Fixed with a
+small, guarded backend addition (`boardId` accepted on the existing
+task-update endpoint, re-verified server-side to belong to the same
+project) plus a frontend fix for a related gap where an empty destination
+column had no drop target at all. See
+[docs/TASKS.md](./docs/TASKS.md#moving-a-task-to-a-different-board) and
+[docs/FRONTEND.md](./docs/FRONTEND.md#kanban--board-is-the-column-important).
 
 ## Security, testing & demo data (Phases 16–18)
 
