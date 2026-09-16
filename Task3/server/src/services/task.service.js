@@ -1,6 +1,8 @@
 import { prisma } from '../config/prisma.js'
 import { AppError } from '../utils/AppError.js'
 import { toTaskSummary } from '../utils/task.js'
+import { createNotifications } from './notification.service.js'
+import { emitToProject } from '../realtime/socket.js'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -76,7 +78,9 @@ export async function createTask(projectId, boardId, createdById, input) {
   }
 
   const task = await prisma.task.create({ data, select: TASK_SELECT })
-  return toTaskSummary(task)
+  const safe = toTaskSummary(task)
+  emitToProject(projectId, 'task:created', { projectId, boardId, task: safe })
+  return safe
 }
 
 // Ordered by position, then createdAt, then id — the third tiebreaker
@@ -107,27 +111,96 @@ export async function getTask(boardId, taskId) {
   return toTaskSummary(task)
 }
 
-export async function updateTask(boardId, taskId, update) {
-  await getTaskWithinBoard(boardId, taskId)
+// Dates compare by value (Prisma returns a Date instance; the validator
+// parses dueDate into one too), everything else by strict equality — used
+// to tell "the client resent the same value" apart from "this field
+// actually changed," so a no-op PATCH never fires an event or notification.
+function valuesDiffer(a, b) {
+  if (a instanceof Date || b instanceof Date) {
+    const aTime = a === null || a === undefined ? null : new Date(a).getTime()
+    const bTime = b === null || b === undefined ? null : new Date(b).getTime()
+    return aTime !== bTime
+  }
+  return a !== b
+}
+
+const CONTENT_FIELDS = ['title', 'description', 'priority', 'dueDate']
+
+// actorId is always req.user.id (the verified JWT) — used only to exclude
+// the person making the change from their own "this task changed"
+// notification, never trusted for anything else.
+export async function updateTask(boardId, taskId, actorId, update) {
+  const before = await getTaskWithinBoard(boardId, taskId)
 
   const task = await prisma.task.update({
     where: { id: taskId },
     data: update,
     select: TASK_SELECT,
   })
-  return toTaskSummary(task)
+  const safe = toTaskSummary(task)
+
+  // Position is this project's only concept of "moved" (see TASKS.md — a
+  // cross-board move endpoint doesn't exist in this phase); everything
+  // else is a content update. Both are computed against the pre-update
+  // snapshot, not just "was the field present in the request body," so
+  // resending an unchanged value is correctly treated as a no-op.
+  const moved = 'position' in update && valuesDiffer(update.position, before.position)
+  const contentChanged = CONTENT_FIELDS.some((field) => field in update && valuesDiffer(update[field], before[field]))
+
+  // Real-time events reach everyone watching the project board, regardless
+  // of assignment — assignment only narrows who gets a *notification*,
+  // handled separately below.
+  if (moved) {
+    emitToProject(task.projectId, 'task:moved', { projectId: task.projectId, boardId, task: safe })
+  }
+  if (contentChanged) {
+    emitToProject(task.projectId, 'task:updated', { projectId: task.projectId, boardId, task: safe })
+  }
+
+  if (moved || contentChanged) {
+    const assignees = await prisma.taskAssignee.findMany({ where: { taskId }, select: { userId: true } })
+    const recipients = new Set(assignees.map((a) => a.userId))
+    recipients.delete(actorId)
+
+    if (recipients.size > 0) {
+      const notifications = []
+      if (moved) {
+        notifications.push(
+          ...Array.from(recipients).map((userId) => ({
+            userId,
+            type: 'TASK_MOVED',
+            message: `"${task.title}" was moved.`,
+            projectId: task.projectId,
+            taskId,
+          })),
+        )
+      }
+      if (contentChanged) {
+        notifications.push(
+          ...Array.from(recipients).map((userId) => ({
+            userId,
+            type: 'TASK_UPDATED',
+            message: `"${task.title}" was updated.`,
+            projectId: task.projectId,
+            taskId,
+          })),
+        )
+      }
+      await createNotifications(notifications)
+    }
+  }
+
+  return safe
 }
 
 export async function deleteTask(boardId, taskId) {
-  await getTaskWithinBoard(boardId, taskId)
+  const task = await getTaskWithinBoard(boardId, taskId)
 
   // TaskAssignee, Comment, and this task's own Notification rows all
   // cascade at the schema level (onDelete: Cascade); Activity.taskId nulls
   // out instead (SetNull) so a project's timeline entry survives even
-  // after the task it references is gone (see DATABASE_SCHEMA.md). As of
-  // Phase 9, TaskAssignee rows can genuinely exist, so this cascade is no
-  // longer inert — verified directly in this phase (deleting a task with
-  // assignees leaves zero orphaned task_assignees rows). Comment/
-  // Notification creation still doesn't exist yet (Phases 10/11).
+  // after the task it references is gone (see DATABASE_SCHEMA.md).
   await prisma.task.delete({ where: { id: taskId } })
+
+  emitToProject(task.projectId, 'task:deleted', { projectId: task.projectId, boardId, taskId })
 }

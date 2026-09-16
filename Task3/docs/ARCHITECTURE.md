@@ -373,25 +373,52 @@ description, priority, position, due date) was Phase 8.
 
 ## 14. Comment model
 
+**Implemented in Phase 10** (`GET/POST/PATCH/DELETE` under
+`/api/projects/:projectId/boards/:boardId/tasks/:taskId/comments` — see
+[COMMENTS.md](./COMMENTS.md)).
+
 - A `Comment` belongs to exactly one `Task` and has exactly one `author`
   (`User`). Comments are the primary communication channel on a task.
 - Comments are ordered by `createdAt` (indexed as `(taskId, createdAt)` for
-  efficient "load a task's comment thread" queries).
-- Editing a comment updates `updatedAt`; the API (later phase) can use this
-  to show "edited" indicators.
+  efficient "load a task's comment thread" queries) — ascending, the
+  natural reading order for a conversation, unlike every other list in this
+  project (which orders newest-first).
+- Editing a comment updates `updatedAt`, but is restricted to the comment's
+  own `author` — not `OWNER`/`ADMIN`, a deliberate exception to this
+  project's usual "elevated roles manage everything" pattern (see Section
+  24). Deletion is the opposite: author *or* `OWNER`/`ADMIN` (moderation).
+- `authorId` is always `req.user.id` from the verified JWT — never a
+  request body field, so a comment can never be authored as someone else.
 
-## 15. Notification architecture (planned — later phase)
+## 15. Notification architecture
+
+**Implemented in Phase 11** (`GET/PATCH/DELETE` under `/api/notifications`
+— see [NOTIFICATIONS.md](./NOTIFICATIONS.md)).
 
 - A `Notification` always has a `userId` (recipient) and a `type`
   (`NotificationType` enum) plus a human-readable `message`.
 - `projectId`/`taskId` are optional context pointers, cascading with their
   target so a notification never dangles after its subject is deleted.
 - Notifications are created by the service layer as a side effect of
-  domain actions (assigning a task, commenting, moving a task, adding a
-  member) — never created directly by a controller.
-- REST endpoints (later phase): list my notifications, mark one/all as read.
+  domain actions (assigning a task, commenting, moving/updating a task,
+  adding a member) — never created directly by a controller, and never for
+  an operation that didn't actually commit. `notification.service.js`
+  provides the generic create/list/read/delete primitives; each domain
+  service (membership, task, assignment, comment) owns the business logic
+  of *when* to call them and *who* the recipients are.
+- Every trigger excludes the actor from their own notification — nobody is
+  told about their own self-assignment, their own edit, or their own
+  comment.
+- REST endpoints: list my notifications (paginated, newest first), an
+  unread count (one `COUNT` query), mark one or all read (idempotent), and
+  delete one. Every route is scoped to `req.user.id`'s own rows; a
+  notification belonging to someone else is a `404`, identical to one that
+  doesn't exist.
 
-## 16. Socket.IO architecture (planned — later phase, bonus)
+## 16. Socket.IO architecture
+
+**Implemented in Phase 12** (see [REALTIME.md](./REALTIME.md) for the
+complete event list, room design, and authentication flow).
 
 Real-time updates are additive, not a replacement for persistence. Every
 state change is written to PostgreSQL first; Socket.IO only broadcasts that
@@ -405,25 +432,35 @@ sequenceDiagram
     participant IO as Socket.IO server
     participant BB as Browser B
 
-    BA->>API: POST /api/tasks/:id/move
-    API->>DB: update Task.boardId/position (source of truth)
+    BA->>API: PATCH /api/.../tasks/:taskId {"position": 3}
+    API->>DB: update Task.position (source of truth)
     DB-->>API: success
-    API->>IO: emit "task:moved" to project room
+    API->>IO: emitToProject(projectId, "task:moved", {...})
     API-->>BA: 200 OK
-    IO-->>BB: "task:moved" event
+    IO-->>BB: "task:moved" event (BB already joined project:<id>)
     BB->>BB: patch local state (or refetch)
 ```
 
-Planned conventions:
+Implemented conventions:
 
-- One Socket.IO namespace/room per `projectId`; clients join the room for
-  every project they currently have open.
-- Events are named `<entity>:<action>` (`task:created`, `task:moved`,
-  `comment:added`, `member:added`, `notification:new`).
+- One Socket.IO room per `projectId` (`project:<id>`); a socket sends
+  `project:join { projectId }` and receives a `{ success, message? }`
+  acknowledgement — membership is verified fresh from PostgreSQL on every
+  join, exactly like `requireProjectMember` does for REST requests. Every
+  authenticated socket also auto-joins a personal `user:<id>` room on
+  connect, for notification delivery.
+- Events are named `<entity>:<action>`
+  (`project:member_added`; `board:created/updated/deleted`;
+  `task:created/updated/moved/deleted`; `task:assigned/unassigned`;
+  `comment:created/updated/deleted`; `notification:new`, `notification:read`).
 - The socket server never accepts writes — it is emit-only from the
-  server's perspective. Clients always write through the REST API.
-- Socket auth reuses the same JWT (passed during the handshake) rather than
-  inventing a second auth mechanism.
+  server's perspective (`server/src/realtime/socket.js` exposes
+  `emitToProject`/`emitToUser`, called by each domain service after its own
+  Prisma write commits). Clients always write through the REST API; the
+  only inbound socket events are `project:join`/`project:leave`.
+- Socket auth reuses the same JWT (passed as `socket.handshake.auth.token`,
+  verified with the identical `verifyAccessToken()` every REST request
+  uses) rather than inventing a second auth mechanism.
 
 ## 17. API organization
 
@@ -451,10 +488,14 @@ breaking change is needed). Current + planned resource layout:
                                            POST (OWNER/ADMIN)
 /api/.../tasks/:taskId/assignees/:userId  GET (any member),         — implemented (Phase 9)
                                            DELETE (OWNER/ADMIN)
-/api/tasks/:id/comments             GET, POST
-/api/comments/:id                   PATCH, DELETE
+/api/.../tasks/:taskId/comments            GET, POST (any member)   — implemented (Phase 10)
+/api/.../tasks/:taskId/comments/:commentId GET (any member),        — implemented (Phase 10)
+                                            PATCH (author only),
+                                            DELETE (author or OWNER/ADMIN)
+/api/notifications                    GET, GET /unread-count,       — implemented (Phase 11)
+                                       PATCH /:id/read, PATCH /read-all,
+                                       DELETE /:id (requireAuth, own rows only)
 /api/projects/:id/activity           GET
-/api/notifications                   GET, PATCH
 ```
 
 Each resource group gets its own `routes/*.routes.js`, mounted from a single
@@ -497,6 +538,22 @@ reuses task.service.js's exported `getTaskWithinBoard` the same way
 `requireBoardInProject` reuses `getBoardWithinProject` — one implementation
 per hierarchy level, each reused by both its own resource's controller and
 whatever's nested underneath it.
+
+Comments (Phase 10) are a *sibling* of assignees, not a child of them —
+`comment.routes.js` is mounted directly from `task.routes.js` at
+`router.use('/:taskId/comments', requireTaskInBoard(), commentRoutes)`,
+reusing the exact same hierarchy gate. Comments have no route-level role
+gate at all (unlike boards/tasks/assignees' `requireProjectRole` on their
+write operations) — author-vs-moderator authorization depends on the
+specific comment's `authorId`, which no fixed role check can know in
+advance, so it's resolved inside `comment.service.js` itself once the
+comment has actually been looked up.
+
+Notifications (Phase 11) break this nesting pattern entirely and are
+mounted directly from `routes/index.js`, like `/auth` and `/users` — they
+are user-scoped, not project/board/task-scoped, so there is no project
+hierarchy to verify; `requireAuth` alone is the only gate, and every
+service function additionally scopes its query to `req.user.id`.
 
 `/api/auth/me` and `/api/users/me` are deliberately separate, not
 duplicates: the former is read-only "who am I" identity data returned as
@@ -738,9 +795,59 @@ never an HTML error page.
   zero assignees who aren't members of their task's project; full
   regression of Phase 3 through 8. See [ASSIGNMENTS.md](./ASSIGNMENTS.md)
   for the complete scenario list and results.
+- **Phase 10 comment verification:** unauthenticated `401`; OWNER/ADMIN/
+  MEMBER all create successfully, non-member `403`; missing/empty content
+  `400`, unsupported field (an `authorId` spoof attempt) `400`; chronological
+  (oldest-first) list order confirmed; **a comment requested through a
+  sibling task in the same project, or through an entirely different
+  project, both `404`**; **the author-only edit rule verified against both
+  an ADMIN and an OWNER — both rejected `403` editing another member's
+  comment**, confirming role alone never grants edit access; **delete
+  verified as the deliberate exception** — a plain MEMBER `403` deleting
+  someone else's comment, but OWNER *and* ADMIN both succeed at deleting
+  someone else's (moderation), and the author always succeeds deleting
+  their own; `User`, `Task`, and `ProjectMember` all confirmed present
+  after every comment deletion; a `TASK_COMMENTED` notification confirmed
+  for the task's creator when someone else commented, and confirmed
+  *absent* for the commenter's own comment; zero orphaned `comments` rows
+  via direct SQL; full regression of Phase 3 through 9. See
+  [COMMENTS.md](./COMMENTS.md) for the complete scenario list.
+- **Phase 11 notification verification:** a user's own notifications
+  listed correctly; an unread count confirmed accurate; marking one read
+  (and re-marking it — idempotent, still `200`) and marking all read both
+  confirmed against `GET /unread-count`; a user attempting to read/delete
+  another user's notification `404` in both cases (never `403` — no
+  confirmation the id even belongs to someone); deleting a user's own
+  notification confirmed removed via a follow-up list; every generation
+  trigger exercised directly — `PROJECT_MEMBER_ADDED` on membership add,
+  `TASK_ASSIGNED` on assignment (and confirmed *absent* for a
+  self-assignment), `TASK_COMMENTED` on comment creation (excluding the
+  commenter), `TASK_UPDATED` on a content change, `TASK_MOVED` on a
+  `position` change — and confirmed a repeated, value-identical PATCH
+  produces no duplicate `TASK_MOVED`/`TASK_UPDATED` notification (a true
+  no-op is detected by diffing against the pre-update row, not merely
+  "was this field present in the request"); zero orphaned `notifications`
+  rows via direct SQL; `passwordHash` confirmed absent from every response.
+- **Phase 12 real-time verification, using a temporary `socket.io-client`
+  test harness (never added as a project dependency):** a valid JWT in the
+  handshake connects; a missing, syntactically invalid, expired, and
+  wrong-secret-signed token are all rejected identically; a project member
+  successfully joins `project:<id>` and a non-member is rejected with a
+  distinct message from a genuinely nonexistent project (mirroring
+  `requireProjectMember`'s own 403-vs-404 split); a listener joined to
+  Project A's room received `board:created`/`task:created`/`comment:created`
+  events triggered by REST calls made in a separate process while it was
+  listening, confirmed with safe (no-`passwordHash`, no-JWT) payloads; the
+  same listener received **zero** events when a mutation was made in
+  Project B instead — direct cross-project isolation confirmed; a
+  `task:assigned` event reached the project room and a `notification:new`
+  event reached the assignee's *personal* room independently, from a single
+  REST call; a `notification:read` event reached only the notification's
+  owner and was confirmed absent for an unrelated listener. See
+  [REALTIME.md](./REALTIME.md) for the complete scenario list.
 - **Database verification:** `prisma migrate`, `prisma db seed`, and direct
   queries (via `prisma studio` or ad hoc scripts) confirm schema integrity
-  and seed idempotency. Phases 4 through 9 required no schema change — the
+  and seed idempotency. Phases 4 through 12 required no schema change — the
   Phase 2 schema already had everything each needed.
 - **Build verification:** `npm run build` for both workspaces must succeed
   with zero TypeScript/bundler errors; `tsc --noEmit` confirms the client
@@ -825,9 +932,38 @@ never an HTML error page.
   the Phase 2 `TaskAssignee` model already had everything this needed. No
   comments, notifications, Socket.IO, or frontend UI — those remain later
   phases.
-- **Phase 10+ (not started)** — task comments API, notifications API, full
-  frontend (dashboard, Kanban board, task detail view,
-  login/register/project/board UI), Socket.IO real-time layer.
+- **Phase 10** — task comments: `Comment` CRUD under
+  `/api/.../tasks/:taskId/comments[/:commentId]`, reusing the existing
+  hierarchy middleware unchanged. `authorId` always from the verified JWT.
+  Editing is author-only (a deliberate exception to this project's usual
+  role-based moderation pattern); deletion is author-or-`OWNER`/`ADMIN`.
+  Triggers a `TASK_COMMENTED` notification to the task's assignees and
+  creator (excluding the commenter) and a `comment:created`/`updated`/
+  `deleted` real-time event. No schema change.
+- **Phase 11** — notifications: `GET/PATCH/DELETE` under the user-scoped,
+  top-level `/api/notifications` (no project hierarchy to verify —
+  `requireAuth` alone, plus per-query scoping to `req.user.id`). A single
+  reusable `notification.service.js` (`createNotification`,
+  `createNotifications`, list/count/read/delete) is called by every domain
+  service that just committed a notification-worthy event — Phase 10's
+  `TASK_COMMENTED`, Phase 9's `TASK_ASSIGNED`, Phase 8's `TASK_UPDATED`/
+  `TASK_MOVED` (added retroactively to `task.service.js`'s `updateTask`,
+  diffing before/after to skip no-op updates), and Phase 6's
+  `PROJECT_MEMBER_ADDED`. No schema change — the Phase 2 `Notification`
+  model and `NotificationType` enum already had everything this needed.
+- **Phase 12** — Socket.IO real-time: `server/src/realtime/socket.js`
+  attaches to the same `http.Server` Express already uses (`server.js` now
+  builds an explicit `http.createServer(app)` instead of relying on
+  `app.listen()`'s implicit one — REST behavior is otherwise identical).
+  JWT handshake auth reuses `verifyAccessToken()` directly; project rooms
+  are joined only after a fresh `ProjectMember` lookup; every domain
+  service emits its own event immediately after its Prisma write commits.
+  Folded into the existing graceful-shutdown sequence. `socket.io` was
+  already a package.json dependency since Phase 1 scaffolding — no new
+  dependency was added. No frontend Socket.IO client, no schema change.
+- **Phase 13+ (not started)** — the full frontend UI (dashboard, Kanban
+  board, task detail view, comment thread, notification center, a live
+  Socket.IO client, login/register/project/board screens).
 
 ## 23. Data flow
 
@@ -1067,3 +1203,58 @@ Example: a user moves a task to a different board.
   add ceremony without adding a guarantee the primary key doesn't already
   provide for the one race condition the phase brief calls out
   specifically (two simultaneous identical assignment requests).
+- **Comment editing is author-only; comment deletion is
+  author-or-`OWNER`/`ADMIN`** — deliberately two different rules for two
+  different actions, not one "can this person touch this comment" check.
+  Rewriting someone else's words is never a management action this
+  project's collaboration model grants to elevated roles; removing
+  disruptive content, however, is exactly the kind of moderation
+  `OWNER`/`ADMIN` already perform everywhere else (member removal, board
+  deletion). Both checks live in `comment.service.js`, keyed off the
+  specific comment's `authorId` — neither is expressible as a fixed
+  `requireProjectRole(...)` route gate, since the answer depends on *which*
+  comment, not just *who's asking*.
+- **`notification.service.js` is deliberately "dumb"** — it has zero
+  opinions about which events warrant a notification or who should
+  receive one; it only knows how to create/list/count/mark-read/delete a
+  row and deliver it in real time. That decision-making (Phase 6's
+  membership service deciding "the new member," Phase 8's task service
+  diffing before/after to decide "did this actually change, and who's
+  assigned," Phase 9's assignment service excluding self-assignment,
+  Phase 10's comment service excluding the commenter) stays in each
+  domain's own service, which is the only place that already has the
+  context to make it correctly. A "smart" central notification dispatcher
+  that tried to infer all of this from generic event names would have to
+  reverse-engineer context each domain service already has for free.
+- **`TASK_UPDATED`/`TASK_MOVED` are computed by diffing the pre- and
+  post-update task, not by inspecting which keys were in the request
+  body** — `{ "title": "<the exact current title>" }` is a request that
+  *touches* the title field but doesn't *change* it, and the phase brief is
+  explicit that a no-op update shouldn't notify anyone. Comparing values
+  (with a small `Date`-aware equality check, since `dueDate` round-trips
+  through a `Date` object) is the only way to tell the two apart; "was
+  `title` a key in the body" cannot.
+- **Real-time emission always happens after the triggering Prisma call
+  resolves, never before, and never inside a `catch` block** — an emitted
+  event is a claim that something is now true in the database. Every
+  `emitToProject`/`emitToUser` call in this codebase is the line
+  immediately following a successful `await prisma.*` write (or, for
+  notifications, inside `notification.service.js`'s own
+  `createNotification`, called only after its caller's own mutation
+  already succeeded) — there is no code path where an event fires for an
+  operation that raised.
+- **`http.createServer(app)` replaces `app.listen()`, and that is the
+  *only* change Socket.IO required of the existing REST setup** — Express
+  apps and Socket.IO both need to share one `http.Server` to run on the
+  same port, and `app.listen(port)` is sugar for exactly
+  `http.createServer(app).listen(port)` internally; making that server
+  explicit doesn't change how a single REST request is handled. Verified
+  directly: the full Phase 3–9 regression suite passed unmodified after
+  this change.
+- **Socket.IO gets its own `cors: { origin: env.clientUrl }`, not a shared
+  CORS module with Express's `cors` middleware** — the two are genuinely
+  separate mechanisms (Socket.IO's polling/websocket handshake is
+  intercepted by its own request listener before Express's middleware
+  chain ever runs for that path), so there is no single piece of code to
+  share; what's shared is the *value* they're both configured with
+  (`env.clientUrl`), which is what "consistent" means here.

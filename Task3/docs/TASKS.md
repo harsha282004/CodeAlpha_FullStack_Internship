@@ -342,8 +342,14 @@ project with its own board:
   [ASSIGNMENTS.md](./ASSIGNMENTS.md) (Phase 9)** — not a limitation of this
   module, just out of this document's scope; `TaskAssignee` CRUD is fully
   implemented.
-- **No comments, notifications, or activity-feed writes** from this
-  module — Phases 10 and 11.
+- **Task comments and their notifications are documented separately, in
+  [COMMENTS.md](./COMMENTS.md) (Phase 10) and
+  [NOTIFICATIONS.md](./NOTIFICATIONS.md) (Phase 11)** — both fully
+  implemented, just out of this document's scope. **`TASK_UPDATED`/
+  `TASK_MOVED` notifications and real-time events were added to this
+  module's own `updateTask`** in Phase 11/12 — see
+  [NOTIFICATIONS.md](./NOTIFICATIONS.md) and [REALTIME.md](./REALTIME.md).
+  No activity-feed (`Activity` model) writes exist anywhere yet.
 - **No drag-and-drop reordering algorithm** — `position` can be set
   directly, but there's no "move this task between these two others"
   endpoint that renumbers/rebalances automatically, matching the same

@@ -7,27 +7,24 @@ assignments, and comments — built with React, Express, and PostgreSQL.
 
 ## Status
 
-**Current phase: Phase 9 complete (task assignment).** Architecture is
-documented, the monorepo scaffolding (client + server) runs, the full Prisma
-schema + seed data are in place, the Express API has its production-ready
-foundation (centralized error handling, restricted CORS, security headers,
-request-size limits, graceful shutdown), real registration/login/JWT
-authentication runs against PostgreSQL, authenticated users can view/edit
-their profile and look up or search for other users, users can create
-projects and manage OWNER/ADMIN/MEMBER membership with every write
-authorized against the caller's actual role in PostgreSQL, each project
-organizes its work into ordered boards, each board holds task cards, and
-each task can now be assigned to one or more of that task's own project
-members — never to anyone outside the project.
+**Current phase: Phases 10–12 complete (task comments, notifications, and
+Socket.IO real-time updates).** Architecture is documented, the monorepo
+scaffolding (client + server) runs, the full Prisma schema + seed data are
+in place, the Express API has its production-ready foundation, real JWT
+authentication runs against PostgreSQL, users can manage their profile,
+projects, OWNER/ADMIN/MEMBER membership, boards, task cards, and task
+assignment — and now, on top of all of that: tasks support a threaded
+comment discussion, real application events generate real notifications
+(never fake/random ones), and every REST mutation broadcasts a real-time
+Socket.IO event to everyone authorized to see it. PostgreSQL remains the
+single source of truth throughout — Socket.IO only announces that a change
+already committed to the database, never a replacement for it.
 
-No other application features are implemented yet: task comments (Phase
-10), notifications (Phase 11), Socket.IO/real-time (Phase 12), and the real
-dashboard/Kanban UI are all planned for later phases. The homepage still
-only confirms the frontend can reach the API and the database — there is no
-login/register/profile/project/board/task UI yet, since the frontend for
-any of this is a later phase. `/api` currently exposes `health`, `auth`,
-`users`, and `projects` (including nested boards, tasks, and task
-assignees) only.
+The only thing not implemented yet is the **frontend.** There is no
+login/register/profile/project/board/task/comment/notification UI, and no
+Socket.IO client integration — those are later, frontend-only phases. `/api`
+now exposes `health`, `auth`, `users`, `projects` (with nested boards,
+tasks, task assignees, and task comments), and `notifications`.
 
 ## Stack
 
@@ -166,23 +163,26 @@ error — is JSON with a `success` boolean:
 | `GET` | `/api/health/db` | 200 if Prisma can reach PostgreSQL (`SELECT 1`); 503 if not |
 | any | anything else under `/api` | 404 JSON (`code: "NOT_FOUND"`), never an HTML error page |
 
-Everything else (`/api/comments`, `/api/notifications`) is deliberately not
-mounted yet — those are later phases. `/api/auth`, `/api/users`,
-`/api/projects`, the nested `/api/projects/:id/boards`, the further-nested
-`/api/projects/:id/boards/:boardId/tasks`, and the even-further-nested
-`.../tasks/:taskId/assignees` are all now live — see
-[Authentication (Phase 4)](#authentication-phase-4),
+Every resource group under `/api/projects` is now live, all the way down
+to `.../tasks/:taskId/comments`, plus the top-level, user-scoped
+`/api/notifications` — see [Authentication (Phase 4)](#authentication-phase-4),
 [User profiles (Phase 5)](#user-profiles-phase-5),
 [Projects & membership (Phase 6)](#projects--membership-phase-6),
 [Project boards (Phase 7)](#project-boards-phase-7),
-[Task cards (Phase 8)](#task-cards-phase-8), and
-[Task assignment (Phase 9)](#task-assignment-phase-9) below, plus
+[Task cards (Phase 8)](#task-cards-phase-8),
+[Task assignment (Phase 9)](#task-assignment-phase-9),
+[Task comments (Phase 10)](#task-comments-phase-10),
+[Notifications (Phase 11)](#notifications-phase-11), and
+[Real-time updates (Phase 12)](#real-time-updates-phase-12) below, plus
 [docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md),
 [docs/USER_PROFILES.md](./docs/USER_PROFILES.md),
 [docs/PROJECTS.md](./docs/PROJECTS.md),
 [docs/BOARDS.md](./docs/BOARDS.md),
-[docs/TASKS.md](./docs/TASKS.md), and
-[docs/ASSIGNMENTS.md](./docs/ASSIGNMENTS.md) for the full detail.
+[docs/TASKS.md](./docs/TASKS.md),
+[docs/ASSIGNMENTS.md](./docs/ASSIGNMENTS.md),
+[docs/COMMENTS.md](./docs/COMMENTS.md),
+[docs/NOTIFICATIONS.md](./docs/NOTIFICATIONS.md), and
+[docs/REALTIME.md](./docs/REALTIME.md) for the full detail.
 
 **Middleware order:** `helmet` → CORS → request logger (dev only) →
 `express.json` (100kb limit) → `/api` router → 404 handler → centralized
@@ -208,9 +208,10 @@ project by design (Vite dev server vs. Express) — without that adjustment,
 browsers would block the frontend's own `fetch()` calls despite CORS
 allowing them.
 
-**Graceful shutdown:** `SIGINT`/`SIGTERM` stop new connections, let in-flight
-requests finish, disconnect Prisma, then exit — guarded so a second signal
-mid-shutdown can't run the sequence twice.
+**Graceful shutdown:** `SIGINT`/`SIGTERM` close Socket.IO (Phase 12 — see
+[Real-time updates](#real-time-updates-phase-12)) first, stop new HTTP
+connections, let in-flight requests finish, disconnect Prisma, then exit —
+guarded so a second signal mid-shutdown can't run the sequence twice.
 
 ## Authentication (Phase 4)
 
@@ -477,19 +478,121 @@ only ever produce one row.
 `User`, the `ProjectMember`, or the `Task` itself. Verified directly after
 every removal during testing.
 
+## Task comments (Phase 10)
+
+Tasks now support a threaded discussion. Full detail in
+[docs/COMMENTS.md](./docs/COMMENTS.md).
+
+**Routes** (all under
+`/api/projects/:projectId/boards/:boardId/tasks/:taskId/comments`,
+authenticated project members only):
+
+| Method | Path | Who | Behavior |
+|---|---|---|---|
+| `POST` | `/` | any member | Create a comment (`content` only) |
+| `GET` | `/?page=&limit=` | any member | List, oldest first (a conversation reads top-to-bottom) |
+| `GET` | `/:commentId` | any member | Comment detail |
+| `PATCH` | `/:commentId` | **author only** | Edit content |
+| `DELETE` | `/:commentId` | **author, or OWNER/ADMIN** | Delete (moderation) |
+
+**No schema change** — `Comment` already had everything needed.
+`authorId` always comes from the verified JWT, never a request body field.
+
+**Editing is author-only, deliberately excluding OWNER/ADMIN** — unlike
+every other "who can manage this" question in this project, editing
+someone else's words isn't a role-based management action; it stays with
+whoever wrote it, full stop. **Deletion is different**: the author can
+remove their own comment, and OWNER/ADMIN can remove *any* comment for
+moderation — an ordinary MEMBER cannot delete someone else's. Both checks
+were verified explicitly, including confirming an OWNER is rejected from
+*editing* a MEMBER's comment even though they *can* delete it.
+
+## Notifications (Phase 11)
+
+Real notifications, generated only from real events that already
+committed to the database — never fake or random ones. Full detail in
+[docs/NOTIFICATIONS.md](./docs/NOTIFICATIONS.md).
+
+**Routes** (all under `/api/notifications`, authenticated — every route
+only ever touches the caller's own rows):
+
+| Method | Path | Behavior |
+|---|---|---|
+| `GET` | `/?page=&limit=` | List my notifications, newest first |
+| `GET` | `/unread-count` | `{ count }` — one `COUNT` query, never "fetch all and count in JS" |
+| `PATCH` | `/:notificationId/read` | Mark one read (idempotent) |
+| `PATCH` | `/read-all` | Mark all my unread notifications read |
+| `DELETE` | `/:notificationId` | Delete one |
+
+**No schema change** — `Notification` and its `NotificationType` enum
+already had everything Phase 11 needed. **Generated for five real
+events:** a project member is added, a task is assigned, a task is
+commented on, a task's content changes, and a task moves (its `position`
+changes) — each created by the domain service that just performed the
+mutation, never by a controller, and never for an operation that didn't
+actually succeed. **Nobody is ever notified about their own action** —
+self-assignment, editing your own task, and commenting are all excluded
+from their own notification fan-out, verified directly during testing. **A
+notification belonging to someone else is a `404`, identical to one that
+doesn't exist** — the same "don't confirm what you can't see" discipline
+used everywhere else in this project.
+
+## Real-time updates (Phase 12)
+
+Socket.IO now runs alongside the REST API on the same HTTP server. Full
+detail — including the complete event list — in
+[docs/REALTIME.md](./docs/REALTIME.md). **PostgreSQL remains the sole
+source of truth**: every event is emitted *after* its triggering database
+write has already committed, never before, and never as a substitute for
+one.
+
+**Authentication reuses the exact same JWT** used by the REST API —
+passed in the Socket.IO handshake (`auth: { token }`), verified with the
+identical `verifyAccessToken()`. There is no second authentication system.
+A missing, malformed, expired, or wrong-secret-signed token is rejected
+the same generic way, regardless of which of those it was.
+
+**Project rooms are opt-in and membership-checked on every join** — a
+connected socket emits `project:join` with a `projectId`; the server looks
+up `ProjectMember` fresh from PostgreSQL before letting it join
+`project:<id>`, distinguishing "no such project" from "you're not in it"
+the same way the REST API's `requireProjectMember` does. Every
+authenticated socket also auto-joins a personal `user:<id>` room on
+connect (no membership check needed — you always own your own
+notifications), which is how `notification:new`/`notification:read`
+reach exactly one person.
+
+**Events cover every mutation implemented so far:** `project:member_added`,
+`board:created/updated/deleted`, `task:created/updated/moved/deleted`,
+`task:assigned/unassigned`, `comment:created/updated/deleted`, and
+`notification:new`/`notification:read`. Payloads are small and
+allow-listed the same way every REST response already is — never a raw
+Prisma row, never `passwordHash`, never a JWT.
+
+**CORS matches the REST API exactly** (`CLIENT_URL`, never `*`), and
+Socket.IO is folded into the existing graceful-shutdown sequence — closed
+before the HTTP server stops accepting new connections.
+
+**Frontend integration (a `socket.io-client` in the actual UI) is not part
+of this phase** — this is the backend/API milestone only; a temporary test
+client was used for verification and was not added as a project
+dependency.
+
 ## Current phase
 
 Phase 0 (architecture/planning), Phase 1 (scaffolding), Phase 2 (database
 layer), Phase 3 (backend foundation), Phase 4 (authentication), Phase 5
 (user profiles), Phase 6 (projects & membership), Phase 7 (project
-boards), Phase 8 (task cards), and Phase 9 (task assignment) are complete.
-Task comments (Phase 10), notifications (Phase 11), Socket.IO real-time
-updates (Phase 12), and the full frontend UI are planned for subsequent
+boards), Phase 8 (task cards), Phase 9 (task assignment), Phase 10 (task
+comments), Phase 11 (notifications), and Phase 12 (Socket.IO real-time
+updates) are all complete. The full frontend UI — including Socket.IO
+client integration — is the only thing left, planned for subsequent
 phases.
 
 ## Planned features
 
-- Comments on tasks
-- Project activity timeline
-- Notifications
-- Real-time updates via Socket.IO
+- The full frontend UI: login/register, profile, project/board/task
+  screens, a Kanban board, comment threads, a notification center, and a
+  live Socket.IO client
+- Project activity timeline surfaced in the UI (the `Activity` model
+  exists in the database but nothing writes to it yet)

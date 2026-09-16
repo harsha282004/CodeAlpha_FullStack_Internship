@@ -346,9 +346,11 @@ member) across two boards in one project and a second project entirely:
   up a task must ask an `OWNER`/`ADMIN` to assign them; this phase doesn't
   add a lower-privilege path for self-assignment. Revisit if the
   collaboration model calls for it later.
-- **No notification on assignment** — `NotificationType.TASK_ASSIGNED`
-  exists in the schema (Phase 2) but nothing in this phase writes a
-  `Notification` row. That's Phase 11.
+- ~~No notification on assignment~~ **Implemented in Phase 11:**
+  `addAssignee` now creates a `TASK_ASSIGNED` notification for the newly
+  assigned user (skipped for a self-assignment) and emits a real-time
+  `task:assigned` event (Phase 12) — see
+  [NOTIFICATIONS.md](./NOTIFICATIONS.md) and [REALTIME.md](./REALTIME.md).
 - **No assignee-specific task permissions** — Phase 8 already noted this:
   "only the assignee (or an admin) can update this task" isn't
   implemented; any project member can still update any task's content

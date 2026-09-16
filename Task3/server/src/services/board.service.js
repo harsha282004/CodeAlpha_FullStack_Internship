@@ -1,6 +1,7 @@
 import { prisma } from '../config/prisma.js'
 import { AppError } from '../utils/AppError.js'
 import { toBoardSummary } from '../utils/board.js'
+import { emitToProject } from '../realtime/socket.js'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -58,7 +59,9 @@ export async function createBoard(projectId, { name, position }) {
     data: { projectId, name, position: resolvedPosition },
     select: BOARD_SELECT,
   })
-  return toBoardSummary(board)
+  const safe = toBoardSummary(board)
+  emitToProject(projectId, 'board:created', { projectId, board: safe })
+  return safe
 }
 
 // Ordered by position, with createdAt as a tiebreaker for full
@@ -87,16 +90,19 @@ export async function updateBoard(projectId, boardId, update) {
     data: update,
     select: BOARD_SELECT,
   })
-  return toBoardSummary(board)
+  const safe = toBoardSummary(board)
+  emitToProject(projectId, 'board:updated', { projectId, board: safe })
+  return safe
 }
 
 export async function deleteBoard(projectId, boardId) {
   await getBoardWithinProject(projectId, boardId)
 
   // Task.board is declared onDelete: Cascade in schema.prisma — any tasks
-  // filed under this board would be deleted along with it. Phase 8 hasn't
-  // introduced task creation yet, so no Task row can currently reference
-  // any board; this is documented here so the cascade isn't a surprise
-  // once task creation exists.
+  // filed under this board are deleted along with it (and, transitively,
+  // their own comments/assignees/notifications — see task.service.js's
+  // deleteTask).
   await prisma.board.delete({ where: { id: boardId } })
+
+  emitToProject(projectId, 'board:deleted', { projectId, boardId })
 }

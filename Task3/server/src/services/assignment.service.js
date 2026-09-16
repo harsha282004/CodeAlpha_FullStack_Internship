@@ -2,6 +2,8 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../config/prisma.js'
 import { AppError } from '../utils/AppError.js'
 import { toAssigneeSummary } from '../utils/assignment.js'
+import { createNotification } from './notification.service.js'
+import { emitToProject } from '../realtime/socket.js'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -38,16 +40,21 @@ function assertValidUserId(userId) {
 // ProjectMember rows — two concurrent requests for the same pair can only
 // ever result in one row, enforced by Postgres, not by application-level
 // locking.
-export async function addAssignee(projectId, taskId, targetUserId) {
-  const targetUser = await prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true } })
+// actorId is req.user.id (the verified JWT) — used only to skip notifying
+// someone about a self-assignment (an OWNER/ADMIN assigning themselves
+// already knows), never trusted for anything else.
+export async function addAssignee(projectId, taskId, actorId, targetUserId) {
+  const [targetUser, membership, task] = await Promise.all([
+    prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true } }),
+    prisma.projectMember.findUnique({
+      where: { projectId_userId: { projectId, userId: targetUserId } },
+      select: { userId: true },
+    }),
+    prisma.task.findUnique({ where: { id: taskId }, select: { title: true } }),
+  ])
   if (!targetUser) {
     throw new AppError('User not found', 404, 'USER_NOT_FOUND')
   }
-
-  const membership = await prisma.projectMember.findUnique({
-    where: { projectId_userId: { projectId, userId: targetUserId } },
-    select: { userId: true },
-  })
   if (!membership) {
     // Distinct from "user not found" — this user exists, just not in this
     // project — but kept in the same 404 family rather than a 403, since
@@ -57,18 +64,38 @@ export async function addAssignee(projectId, taskId, targetUserId) {
     throw new AppError('User is not a member of this project', 404, 'USER_NOT_A_PROJECT_MEMBER')
   }
 
+  let assignee
   try {
-    const assignee = await prisma.taskAssignee.create({
+    assignee = await prisma.taskAssignee.create({
       data: { taskId, userId: targetUserId },
       select: { assignedAt: true, user: { select: ASSIGNEE_USER_SELECT } },
     })
-    return toAssigneeSummary(assignee)
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       throw new AppError('User is already assigned to this task', 409, 'ASSIGNMENT_ALREADY_EXISTS')
     }
     throw error
   }
+
+  const safe = toAssigneeSummary(assignee)
+
+  emitToProject(projectId, 'task:assigned', { projectId, taskId, assignee: safe })
+
+  // Never notify someone about assigning themselves — a distinct case from
+  // every other trigger in this project, since here the recipient and the
+  // actor can genuinely be the same person (an OWNER/ADMIN assigning
+  // themselves to their own task).
+  if (targetUserId !== actorId) {
+    await createNotification({
+      userId: targetUserId,
+      type: 'TASK_ASSIGNED',
+      message: `You were assigned to "${task.title}".`,
+      projectId,
+      taskId,
+    })
+  }
+
+  return safe
 }
 
 // Ordered by assignedAt ascending — deterministic ("who was assigned
@@ -104,7 +131,7 @@ export async function getAssignmentStatus(taskId, targetUserId) {
 // Removes only the TaskAssignee row — never the User, the ProjectMember,
 // or the Task itself. There is nothing else to cascade: TaskAssignee is a
 // pure join row with no children of its own.
-export async function removeAssignee(taskId, targetUserId) {
+export async function removeAssignee(projectId, taskId, targetUserId) {
   assertValidUserId(targetUserId)
 
   const assignee = await prisma.taskAssignee.findUnique({
@@ -116,4 +143,6 @@ export async function removeAssignee(taskId, targetUserId) {
   }
 
   await prisma.taskAssignee.delete({ where: { taskId_userId: { taskId, userId: targetUserId } } })
+
+  emitToProject(projectId, 'task:unassigned', { projectId, taskId, userId: targetUserId })
 }

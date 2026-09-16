@@ -9,6 +9,7 @@ import {
   deleteTaskController,
 } from '../controllers/task.controller.js'
 import assignmentRoutes from './assignment.routes.js'
+import commentRoutes from './comment.routes.js'
 
 // mergeParams: true — this router is mounted at '/:boardId/tasks' in
 // board.routes.js, so it needs both that parent :boardId and the
@@ -32,5 +33,11 @@ router.delete('/:taskId', requireProjectRole('OWNER', 'ADMIN'), deleteTaskContro
 // assignment.routes.js for the add/remove operations that are OWNER/
 // ADMIN-only.
 router.use('/:taskId/assignees', requireTaskInBoard(), assignmentRoutes)
+
+// Comment routes need only a valid task-within-this-board (not a specific
+// role) as a baseline — author-only/moderator authorization is checked
+// inside comment.service.js itself, since it depends on the specific
+// comment's authorId rather than a fixed role gate.
+router.use('/:taskId/comments', requireTaskInBoard(), commentRoutes)
 
 export default router

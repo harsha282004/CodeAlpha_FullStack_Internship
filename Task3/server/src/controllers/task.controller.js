@@ -20,7 +20,7 @@ export async function getTaskController(req, res) {
 
 export async function updateTaskController(req, res) {
   const update = validateUpdateTaskInput(req.body)
-  const task = await updateTask(req.board.id, req.params.taskId, update)
+  const task = await updateTask(req.board.id, req.params.taskId, req.user.id, update)
   res.status(200).json({ success: true, data: { task } })
 }
 

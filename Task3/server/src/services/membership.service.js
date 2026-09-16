@@ -2,6 +2,8 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../config/prisma.js'
 import { AppError } from '../utils/AppError.js'
 import { toMemberSummary } from '../utils/project.js'
+import { createNotification } from './notification.service.js'
+import { emitToProject } from '../realtime/socket.js'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -28,23 +30,46 @@ function assertValidUserId(userId) {
 // duplicate membership, the same pattern auth.service.js's registerUser
 // uses for duplicate accounts.
 export async function addMember(projectId, { userId, role }) {
-  const targetUser = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } })
+  const [targetUser, project] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
+    prisma.project.findUnique({ where: { id: projectId }, select: { name: true } }),
+  ])
   if (!targetUser) {
     throw new AppError('User not found', 404, 'USER_NOT_FOUND')
   }
 
+  let membership
   try {
-    const membership = await prisma.projectMember.create({
+    membership = await prisma.projectMember.create({
       data: { projectId, userId, role },
       select: { role: true, joinedAt: true, user: { select: MEMBER_USER_SELECT } },
     })
-    return toMemberSummary(membership)
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       throw new AppError('User is already a member of this project', 409, 'MEMBERSHIP_ALREADY_EXISTS')
     }
     throw error
   }
+
+  const safe = toMemberSummary(membership)
+
+  // Only reached once the membership row has actually committed — a
+  // failed create (including the P2002 case above) never gets here, so a
+  // notification/event is never produced for a membership that doesn't
+  // exist. The new member's own identity was already confirmed to differ
+  // from the requester by requireProjectRole (a non-member could never
+  // have called this route in the first place, and a caller who is
+  // already a member would have hit the P2002 above) — so there's no
+  // "don't notify yourself" case to guard here structurally.
+  emitToProject(projectId, 'project:member_added', { projectId, member: safe })
+  await createNotification({
+    userId,
+    type: 'PROJECT_MEMBER_ADDED',
+    message: `You were added to "${project.name}".`,
+    projectId,
+  })
+
+  return safe
 }
 
 // Ordered by role first: Postgres enums sort by declaration order

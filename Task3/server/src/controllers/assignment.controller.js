@@ -3,7 +3,7 @@ import { addAssignee, listAssignees, getAssignmentStatus, removeAssignee } from 
 
 export async function addAssigneeController(req, res) {
   const { userId } = validateAddAssigneeInput(req.body)
-  const assignee = await addAssignee(req.task.projectId, req.task.id, userId)
+  const assignee = await addAssignee(req.task.projectId, req.task.id, req.user.id, userId)
   res.status(201).json({ success: true, data: { assignee } })
 }
 
@@ -18,6 +18,6 @@ export async function getAssignmentStatusController(req, res) {
 }
 
 export async function removeAssigneeController(req, res) {
-  await removeAssignee(req.task.id, req.params.userId)
+  await removeAssignee(req.task.projectId, req.task.id, req.params.userId)
   res.status(200).json({ success: true, message: 'Assignee removed' })
 }
